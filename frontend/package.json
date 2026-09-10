@@ -10,7 +10,9 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "demo:snapshot": "node scripts/build-demo-snapshot.mjs",
-    "demo:build": "NEXT_PUBLIC_DEMO_MODE=true next build"
+    "demo:build": "NEXT_PUBLIC_DEMO_MODE=true next build",
+    "demo:export": "NEXT_PUBLIC_DEMO_MODE=true NEXT_STATIC_EXPORT=true next build",
+    "demo:start": "NEXT_PUBLIC_DEMO_MODE=true next start -p 3000"
   },
   "dependencies": {
     "clsx": "2.1.1",

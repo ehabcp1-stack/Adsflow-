@@ -6,6 +6,7 @@ import { CheckCircle2, KeyRound, ShieldAlert } from 'lucide-react';
 import { LanguageToggle, PageHeader, useDirectorMode } from '@/components/AppShell';
 import { Badge, Card, CardTitle, ErrorState, LoadingBlock, Stat, Toggle } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';
+import { RUNTIME_INFO } from '@/lib/api';
 import { useApi } from '@/lib/hooks';
 import type { ProviderStatus } from '@/lib/types';
 
@@ -60,8 +61,18 @@ export default function SettingsPage() {
         </Card>
 
         <Card>
-          <CardTitle>{t.settings.defaults}</CardTitle>
+          <CardTitle
+            action={
+              <Badge tone={RUNTIME_INFO.demoMode ? 'accent' : 'ok'}>
+                {RUNTIME_INFO.appEnv}
+              </Badge>
+            }
+          >
+            {t.settings.defaults}
+          </CardTitle>
           <dl className="space-y-2 text-[13px]">
+            <Row label="runtime mode" value={RUNTIME_INFO.appEnv} />
+            <Row label="api base url" value={RUNTIME_INFO.apiBaseUrl ?? '— (mock snapshot)'} />
             {Object.entries(data.defaults).map(([key, value]) => (
               <Row key={key} label={key.replace(/_/g, ' ')} value={String(value)} />
             ))}

@@ -229,6 +229,53 @@ breaks. Settings → AI providers shows which key each adapter is waiting for.
 
 ---
 
+## 5a. Netlify — the primary review environment
+
+**The deployed Netlify site is the visual source of truth**, not localhost.
+
+| | |
+|---|---|
+| Site | `adflow-ai-tadafq` |
+| URL | https://adflow-ai-tadafq.netlify.app |
+| Project id | `9ce98808-7572-44ce-9982-7709e71f2fb0` |
+| Config | `netlify.toml` (repo root) — `base = "frontend"`, `npm run build`, Node 20 |
+| Adapter | Netlify's Next.js framework detection (deliberately not overridden) |
+| Runtime today | **MOCK** — `NEXT_PUBLIC_DEMO_MODE=true` until the backend is public |
+
+### Workflow
+
+```
+code → typecheck + lint + build → commit → push → Netlify build → verify deployed URL
+```
+
+One-time setup (Netlify → Site configuration → Build & deploy → Link repository)
+connects the Git repo; after that every push to the production branch builds and
+deploys automatically, and pull requests get Deploy Previews.
+
+### Netlify environment variables
+
+Set in **Site configuration → Environment variables** (also declared in
+`netlify.toml` so a fresh deploy works out of the box):
+
+| Variable | Today | Once the backend is public |
+|---|---|---|
+| `NEXT_PUBLIC_DEMO_MODE` | `true` | `false` |
+| `NEXT_PUBLIC_APP_ENV` | `mock` | `production` |
+| `NEXT_PUBLIC_API_BASE_URL` | *(unset)* | `https://api.your-domain.com` |
+| `NODE_VERSION` | `20` | `20` |
+
+**Never** add `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ELEVENLABS_API_KEY`,
+`VEO_API_KEY`, `RUNWAY_API_KEY`, `SEEDANCE_API_KEY` or `MUSIC_API_KEY` to
+Netlify. Those belong to the backend host only and must never be exposed
+through a `NEXT_PUBLIC_` variable.
+
+### Fallback: drag-and-drop deploy
+
+If the repository is not linked yet, `deploy/netlify/site` holds a pre-built
+static export (`npm run demo:export`). Drag that folder onto
+https://app.netlify.com/projects/adflow-ai-tadafq/deploys — same site, same URL.
+This is a fallback for convenience, not the architecture.
+
 ## 5b. Demo Mode (the hosted showcase)
 
 `NEXT_PUBLIC_DEMO_MODE=true` builds a **fully static** version of the app that

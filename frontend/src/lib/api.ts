@@ -7,11 +7,12 @@
  * bilingual message, so screens can show a friendly state instead of a stack
  * trace. Secrets never live here — the browser only talks to our own API.
  */
-import { DEMO_MODE, DemoUnavailable, demoRequest } from './demo';
+import { API_BASE_URL, API_URL, APP_ENV, DEMO_MODE, RUNTIME_INFO, resolveMediaUrl } from './config';
+import { DemoUnavailable, demoRequest } from './demo';
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
-export const API_URL = `${API_BASE}/api/v1`;
-export { DEMO_MODE };
+export { API_BASE_URL, API_URL, APP_ENV, DEMO_MODE, RUNTIME_INFO };
+/** @deprecated use API_BASE_URL — kept so older imports keep compiling. */
+export const API_BASE = API_BASE_URL;
 
 export class ApiError extends Error {
   code: string;
@@ -116,10 +117,4 @@ export const api = {
 };
 
 /** Turn a relative media path from the API into an absolute browser URL. */
-export function mediaUrl(url?: string | null): string | undefined {
-  if (!url) return undefined;
-  if (url.startsWith('http')) return url;
-  // Demo assets ship with the site and are already site-relative.
-  if (DEMO_MODE || url.startsWith('/demo/')) return url.startsWith('/') ? url : `/${url}`;
-  return `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
-}
+export const mediaUrl = resolveMediaUrl;

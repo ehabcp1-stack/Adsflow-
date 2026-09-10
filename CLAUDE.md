@@ -252,16 +252,69 @@ full regeneration when a smaller fix exists.
 
 ---
 
-## 13. Live preview requirement (development rule)
+## 13. Netlify is the primary visual review environment
 
-The frontend preview at **http://localhost:3000 must keep working at all
-times.** Hot reload stays on. After any meaningful frontend change, verify the
-app still renders. Never build large invisible backend sections while leaving
-the UI unusable; use realistic mock data so every screen stays visually
-testable. Do not remove working screens while implementing later features.
+**The deployed Netlify site is the visual source of truth for the user.**
+localhost is for engineering only — never ask the user to open it to review
+work, and never report localhost as the preview URL.
 
-> Note: running `next build` while `next dev` is live corrupts `.next`. Stop the
-> dev server (or use a separate `distDir`) before a production build.
+Site: `adflow-ai-tadafq` · https://adflow-ai-tadafq.netlify.app
+Netlify project id: `9ce98808-7572-44ce-9982-7709e71f2fb0`
+
+After any meaningful frontend change:
+
+1. `npm run typecheck && npm run lint && npm run demo:build` — all must pass.
+2. Commit with sensible history.
+3. Push the branch.
+4. Let Netlify build and deploy (framework detection + `netlify.toml`).
+5. Open the deployed URL and verify the changed routes there.
+6. Report the Netlify URL, deploy status, branch, routes changed/verified,
+   build status, runtime mode (MOCK or REAL BACKEND) and known limitations.
+
+A major UI task is **not complete** until the deployed version is visually
+usable. Verify the whole route list — not just the homepage:
+`/ · dashboard · projects · projects/new · demo project · analysis · concepts ·
+script · voice · storyboard · production · edit · qc · export · brands · media ·
+settings` — plus Arabic RTL, the dark storyboard/production/edit workspaces,
+media previews, and nested-route refresh.
+
+Do not create duplicate Netlify projects. Do not reconnect a repository that is
+already correctly connected. Do not disable checks to make a build pass — fix
+the cause.
+
+Local development still matters (hot reload, tests, debugging), and the local
+preview must keep working. Note: running `next build` while `next dev` is live
+corrupts `.next` — stop the dev server first.
+
+## 13a. Runtime configuration — one layer, no scattered checks
+
+`frontend/src/lib/config.ts` is the **only** place that reads `process.env` or
+knows about hosts and ports. Three modes:
+
+| Mode | When | Behaviour |
+|---|---|---|
+| `mock` | `NEXT_PUBLIC_DEMO_MODE=true`, or a deployed build with no API URL | answers from the bundled demo snapshot |
+| `development` | local dev with a developer backend | talks to `http://localhost:8000` |
+| `production` | `NEXT_PUBLIC_API_BASE_URL` set on a deployed build | talks to the public FastAPI API |
+
+Rules:
+
+- **Never hardcode `http://localhost:8000`** (or any host/port) in frontend
+  code, and never bake it into a production bundle via `next.config`.
+- `NEXT_PUBLIC_API_BASE_URL` is the canonical variable
+  (`NEXT_PUBLIC_API_URL` is kept only as a legacy alias).
+- A deployed build with no backend configured must fall back to mock, never to
+  a broken-looking shell.
+- Only `NEXT_PUBLIC_*` values may reach the browser. Provider credentials
+  (OpenAI, Gemini, Veo, Runway, Seedance, ElevenLabs, music) stay server-side
+  and are configured on the **backend host**, never in Netlify.
+- The frontend stays a normal Next.js App Router app — Server Components and
+  the Next.js runtime are preserved. `NEXT_STATIC_EXPORT=true` exists only as a
+  drag-and-drop fallback; **do not** make static-only the primary architecture.
+- Netlify hosts the frontend only. The FastAPI backend (Postgres, Redis,
+  workers, S3) is **not** forced onto Netlify; it goes to a persistent
+  application platform later, and mock mode is disabled only after the real
+  workflow is confirmed working end to end.
 
 ---
 

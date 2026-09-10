@@ -12,7 +12,7 @@
  * uploads are refused with a clear message, and a banner says so. The real
  * product runs locally against the backend.
  */
-export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+export { DEMO_MODE } from './config';
 
 type Snapshot = { projectId: string; capturedAt: string; routes: Record<string, any> };
 
