@@ -1,0 +1,46 @@
+# ── Secrets ───────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.db
+*.sqlite3
+
+# ── Generated media / temp production output ─────────────────────────
+backend/storage/
+storage/
+uploads/
+renders/
+exports/
+*.mp4
+*.mov
+*.m4a
+*.wav
+!frontend/public/**/*.mp4
+
+# ── Node / Next ───────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# ── Editors / OS ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

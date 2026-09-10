@@ -1,0 +1,78 @@
+# AdFlow AI — development stack.
+# Local dev without Docker (make dev) is faster; this is for a full-infra run.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: adflow
+      POSTGRES_PASSWORD: adflow
+      POSTGRES_DB: adflow
+    ports: ['5432:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U adflow']
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ['6379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: adflow
+      MINIO_ROOT_PASSWORD: adflow123
+    ports: ['9000:9000', '9001:9001']
+    volumes: ['miniodata:/data']
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://adflow:adflow@postgres:5432/adflow
+      REDIS_URL: redis://redis:6379/0
+      JOB_BACKEND: inline
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_DIR: /app/storage
+      PUBLIC_MEDIA_BASE_URL: http://localhost:8000/media
+      FORCE_MOCK_PROVIDERS: 'true'
+      CORS_ORIGINS: '["http://localhost:3000"]'
+    ports: ['8000:8000']
+    volumes: ['./backend:/app', 'mediadata:/app/storage']
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m app.seed &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  # Optional: uncomment to run generation on Celery workers instead of inline.
+  # worker:
+  #   build: { context: ./backend }
+  #   environment:
+  #     DATABASE_URL: postgresql+psycopg://adflow:adflow@postgres:5432/adflow
+  #     REDIS_URL: redis://redis:6379/0
+  #     JOB_BACKEND: celery
+  #   volumes: ['./backend:/app', 'mediadata:/app/storage']
+  #   depends_on: [backend]
+  #   command: celery -A app.worker.celery_app worker --loglevel=info
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports: ['3000:3000']
+    depends_on: [backend]
+
+volumes:
+  pgdata:
+  miniodata:
+  mediadata:
