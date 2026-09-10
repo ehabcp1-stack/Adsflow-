@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "demo:snapshot": "node scripts/build-demo-snapshot.mjs",
+    "demo:build": "NEXT_PUBLIC_DEMO_MODE=true next build"
   },
   "dependencies": {
     "clsx": "2.1.1",

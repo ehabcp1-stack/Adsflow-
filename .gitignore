@@ -25,7 +25,10 @@ exports/
 *.mov
 *.m4a
 *.wav
-!frontend/public/**/*.mp4
+
+# Demo Mode ships real generated media with the site — keep it tracked.
+!frontend/public/demo/**
+!deploy/netlify/site/**
 
 # ── Node / Next ───────────────────────────────────────────────────────
 node_modules/

@@ -1,0 +1,15 @@
+# AdFlow AI — Demo Mode (static showcase).
+# The site is pre-built with `npm run demo:build` in frontend/ and published
+# as-is; there is no build step and no backend.
+[build]
+  publish = "site"
+
+[[headers]]
+  for = "/demo/*"
+  [headers.values]
+    Cache-Control = "public, max-age=300"
+
+[[headers]]
+  for = "/_next/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

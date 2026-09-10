@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="55%" stop-color="#1E3A8A"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <radialGradient id="r" cx="50%" cy="32%" r="60%">
+      <stop offset="0%" stop-color="#60A5FA" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#60A5FA" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1080" height="1920" fill="url(#g)"/>
+  <rect width="1080" height="1920" fill="url(#r)"/>
+  <g opacity="0.20" stroke="#60A5FA" stroke-width="2" fill="none">
+    <path d="M0 1190 L367 844 L669 1113 L1080 768"/>
+    <circle cx="540" cy="652" r="324"/>
+    <circle cx="540" cy="652" r="216"/>
+  </g>
+  <rect x="86" y="105" rx="22" width="244" height="66" fill="#000000" opacity="0.35"/>
+  <text x="108" y="150" font-family="Inter, Helvetica, Arial, sans-serif" font-size="28" fill="#60A5FA" letter-spacing="2">RENDER V1</text>
+  <text x="540" y="1267" text-anchor="middle" direction="rtl"
+        font-family="Cairo, Tahoma, 'Segoe UI', sans-serif" font-size="72" font-weight="700" fill="#FFFFFF"><tspan x="540" dy="0">مدينة الورد</tspan></text>
+  <text x="540" y="1385" text-anchor="middle"
+        font-family="Inter, Helvetica, Arial, sans-serif" font-size="32" fill="#E2E8F0" opacity="0.85">30s · 1080x1920</text>
+  <text x="540" y="1850" text-anchor="middle"
+        font-family="Inter, Helvetica, Arial, sans-serif" font-size="26" fill="#FFFFFF" opacity="0.55">AdFlow AI · by TADAFQ</text>
+</svg>

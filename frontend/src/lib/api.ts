@@ -7,8 +7,11 @@
  * bilingual message, so screens can show a friendly state instead of a stack
  * trace. Secrets never live here — the browser only talks to our own API.
  */
+import { DEMO_MODE, DemoUnavailable, demoRequest } from './demo';
+
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 export const API_URL = `${API_BASE}/api/v1`;
+export { DEMO_MODE };
 
 export class ApiError extends Error {
   code: string;
@@ -39,6 +42,32 @@ function authHeaders(): Record<string, string> {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // Demo Mode answers from the bundled snapshot — no backend involved.
+  if (DEMO_MODE) {
+    const method = (init.method ?? 'GET').toUpperCase();
+    let body: unknown;
+    if (typeof init.body === 'string') {
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        body = undefined;
+      }
+    }
+    try {
+      return await demoRequest<T>(method, path, body);
+    } catch (error) {
+      if (error instanceof DemoUnavailable) {
+        throw new ApiError(503, error.code, error.message, error.messageAr);
+      }
+      throw new ApiError(
+        500,
+        'demo_error',
+        'The demo snapshot could not be loaded.',
+        'ما كدرنا نحمّل بيانات العرض.',
+      );
+    }
+  }
+
   let response: Response;
   try {
     response = await fetch(`${API_URL}${path}`, {
@@ -90,5 +119,7 @@ export const api = {
 export function mediaUrl(url?: string | null): string | undefined {
   if (!url) return undefined;
   if (url.startsWith('http')) return url;
+  // Demo assets ship with the site and are already site-relative.
+  if (DEMO_MODE || url.startsWith('/demo/')) return url.startsWith('/') ? url : `/${url}`;
   return `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
 }

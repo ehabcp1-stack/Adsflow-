@@ -7,9 +7,25 @@ import { usePathname } from 'next/navigation';
 import { createContext, useContext, useState } from 'react';
 
 import { useLocale } from '@/i18n/LocaleProvider';
+import { DEMO_MODE } from '@/lib/api';
 import { useLocalToggle } from '@/lib/hooks';
 
 import { Badge, Toggle } from './ui';
+
+/** Honest banner: the hosted build is a showcase, not a working install. */
+function DemoBanner() {
+  const { t } = useLocale();
+  if (!DEMO_MODE) return null;
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-ink px-4 py-2 text-center text-[12.5px] text-white/85">
+      <span className="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-white">
+        {t.demoBanner.badge}
+      </span>
+      <span>{t.demoBanner.text}</span>
+      <span className="text-white/55">{t.demoBanner.cta}</span>
+    </div>
+  );
+}
 
 /* --------------------------------------------------- Director Mode context */
 const DirectorModeContext = createContext<{ directorMode: boolean; setDirectorMode: (v: boolean) => void }>({
@@ -101,6 +117,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <DirectorModeContext.Provider value={{ directorMode, setDirectorMode }}>
       <div className="min-h-screen bg-canvas">
+        <DemoBanner />
         {/* Mobile top bar */}
         <div className="sticky top-0 z-30 flex items-center justify-between border-b border-line bg-surface/90 px-4 py-3 backdrop-blur lg:hidden">
           <Wordmark />

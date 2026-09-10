@@ -316,6 +316,11 @@ export const dictionary = {
       noConcepts: 'ما أكو أفكار بعد',
     },
     director: { title: 'مخرج AdFlow', impactHigh: 'مهم', impactMedium: 'متوسط', impactLow: 'بسيط' },
+    demoBanner: {
+      badge: 'وضع العرض',
+      text: 'هذي معاينة ثابتة لمشروع «مدينة الورد» — تكدر تتصفح كل شاشة، بس ما ينحفظ شي وما ينرفع شي.',
+      cta: 'للإنتاج الحقيقي شغّل النسخة المحلية',
+    },
   },
   en: {
     brand: { product: 'AdFlow AI', by: 'by', parent: 'TADAFQ', tagline: 'AI advertising production studio' },
@@ -430,6 +435,11 @@ export const dictionary = {
       noConcepts: 'No concepts yet',
     },
     director: { title: 'AdFlow Director', impactHigh: 'High', impactMedium: 'Medium', impactLow: 'Low' },
+    demoBanner: {
+      badge: 'Demo mode',
+      text: 'A static showcase of the «مدينة الورد» project — every screen is browsable, but nothing is saved or uploaded.',
+      cta: 'Run it locally for real production',
+    },
   },
 } as const;
 

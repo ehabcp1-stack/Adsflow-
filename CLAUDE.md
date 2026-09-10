@@ -265,6 +265,21 @@ testable. Do not remove working screens while implementing later features.
 
 ---
 
+## 13b. Demo Mode must stay honest
+
+`NEXT_PUBLIC_DEMO_MODE=true` produces the static showcase (`frontend/src/lib/demo.ts`)
+that runs with no backend, for hosting on Netlify.
+
+Non-negotiable: **it must never pretend to be a working install.**
+
+- The banner stating "static showcase, nothing is saved" stays visible.
+- Simulated writes live in a session-only overlay that resets on reload; never
+  add fake persistence, fake accounts, or fabricated results.
+- Uploads and anything needing real compute are refused with a clear message
+  that points at the local install — never silently faked.
+- The snapshot is generated from a real seeded run (`npm run demo:snapshot`),
+  never hand-written, so the showcase always reflects real product output.
+
 ## 14. Architecture map
 
 ```

@@ -229,6 +229,46 @@ breaks. Settings → AI providers shows which key each adapter is waiting for.
 
 ---
 
+## 5b. Demo Mode (the hosted showcase)
+
+`NEXT_PUBLIC_DEMO_MODE=true` builds a **fully static** version of the app that
+answers every API call from a snapshot of the seeded «مدينة الورد» project —
+no backend, no database, no keys. It is what gets hosted on Netlify so anyone
+can browse the product from a link.
+
+```bash
+cd backend && uvicorn app.main:app --port 8000   # must be running & seeded
+cd frontend
+npm run demo:snapshot     # captures all GET routes + copies generated media
+npm run demo:build        # static export → frontend/out/
+```
+
+What the snapshot contains (`frontend/public/demo/`): 23 API routes as JSON,
+plus every generated SVG frame and MP4 clip, with media URLs rewritten to be
+site-relative. Total ~520 KB.
+
+Honesty rules baked in:
+
+- A permanent banner says it is a static showcase and nothing is saved.
+- Buttons still respond (approve, refine, switch editing style, toggle
+  captions, export a variant) using a session-only overlay that resets on
+  reload — enough to feel the product, never pretending to persist.
+- Uploads are refused with a clear bilingual message pointing at the local
+  install.
+- Any screen the snapshot cannot answer shows "this needs the live API".
+
+Deploying it (from a machine with normal internet access):
+
+```bash
+cd deploy/netlify
+npx -y netlify-cli deploy --prod --dir=site --site <your-site-id>
+```
+
+Re-running `demo:snapshot` + `demo:build` and copying `frontend/out` into
+`deploy/netlify/site` refreshes the showcase. Each deploy replaces the same
+site at the same URL — Netlify keeps the previous deploys as rollback points,
+it does not create duplicate sites.
+
 ## 6. Testing & quality
 
 ```bash
