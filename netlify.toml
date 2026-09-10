@@ -1,9 +1,9 @@
 # AdFlow AI — Netlify configuration.
 #
 # Netlify is the primary visual review environment. The frontend is a normal
-# Next.js App Router application; Netlify's Next.js adapter is detected
-# automatically and is deliberately NOT overridden here (no publish override,
-# no custom redirects that would break nested-route refresh).
+# Next.js App Router application built with the official Next.js Runtime —
+# how Next builds is not overridden, and there are no custom redirects that
+# would break nested-route refresh.
 #
 # The backend (FastAPI, Postgres, Redis, workers, S3) is NOT hosted here. Until
 # it is publicly deployed the frontend runs in mock mode and stays fully
@@ -12,6 +12,16 @@
 [build]
   base = "frontend"
   command = "npm run build"
+  # Required. Without it Netlify defaults `publish` to the base directory and
+  # ships the raw source tree instead of the build — every route 404s.
+  # Relative to `base`, so this is frontend/.next.
+  publish = ".next"
+
+# The Next.js Runtime. Framework auto-detection did not attach it on the first
+# Git deploy, so it is declared explicitly — this is the official adapter, not
+# an override of how Next.js is built.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
 
 [build.environment]
   NODE_VERSION = "20"

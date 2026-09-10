@@ -238,8 +238,8 @@ breaks. Settings → AI providers shows which key each adapter is waiting for.
 | Site | `adflow-ai-tadafq` |
 | URL | https://adflow-ai-tadafq.netlify.app |
 | Project id | `9ce98808-7572-44ce-9982-7709e71f2fb0` |
-| Config | `netlify.toml` (repo root) — `base = "frontend"`, `npm run build`, Node 20 |
-| Adapter | Netlify's Next.js framework detection (deliberately not overridden) |
+| Config | `netlify.toml` (repo root) — `base = "frontend"`, `npm run build`, `publish = ".next"`, Node 20 |
+| Adapter | `@netlify/plugin-nextjs` (the official Next.js Runtime), declared explicitly |
 | Runtime today | **MOCK** — `NEXT_PUBLIC_DEMO_MODE=true` until the backend is public |
 
 ### Workflow
@@ -368,6 +368,7 @@ Provider keys (all optional): `OPENAI_API_KEY`, `GEMINI_API_KEY`,
 | No videos, only still frames | FFmpeg is not installed — everything still works, previews are posters |
 | Fonts look plain | Google Fonts blocked/offline; the local fallback stack is used |
 | `Demo user is not seeded` | `cd backend && python -m app.seed` |
+| Netlify deploy succeeds but **every route 404s** | `publish` was missing, so Netlify shipped `frontend/` (the source tree) instead of the build. `netlify.toml` must set `publish = ".next"` and declare `@netlify/plugin-nextjs`. Check the deploy's file browser — if you see `src/`, `package.json` and `tsconfig.json`, that is the symptom. |
 
 ---
 
