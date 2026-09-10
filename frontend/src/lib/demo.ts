@@ -64,9 +64,13 @@ export class DemoUnavailable extends Error {
 
 const clone = <T,>(value: T): T => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
 
-/** Any project id in the URL resolves to the single demo project. */
+/**
+ * Any project id in the URL resolves to the single demo project, so a visitor
+ * who lands on an unknown id still sees the full workflow instead of a dead
+ * end. `/projects` and `/projects/new` are left alone.
+ */
 function normalize(path: string, projectId: string): string {
-  return path.replace(/\/projects\/[0-9a-f-]{8,}/i, `/projects/${projectId}`);
+  return path.replace(/\/projects\/(?!new(?:[/?#]|$))[^/?#]+/i, `/projects/${projectId}`);
 }
 
 function applyProjectOverlay(detail: any) {
