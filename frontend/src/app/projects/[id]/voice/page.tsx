@@ -1,7 +1,7 @@
 'use client';
 
 import clsx from 'clsx';
-import { Check, Lock, Mic, Play, Volume2 } from 'lucide-react';
+import { Lock, Mic, Play, Volume2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
@@ -40,7 +40,7 @@ export default function VoicePage() {
 }
 
 function VoiceView({ project, reloadProject }: { project: ProjectDetail; reloadProject: () => void }) {
-  const { t, locale, num, timecode, money } = useLocale();
+  const { t, locale, timecode, money } = useLocale();
   const router = useRouter();
   const { data, error, loading, reload } = useApi<VoicePayload>(`/projects/${project.id}/voice`);
   const [active, setActive] = useState<string | null>(null);

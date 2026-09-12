@@ -256,3 +256,45 @@ def save_silent_audio(key: str, duration_sec: float) -> Optional[str]:
     except Exception:
         return None
     return storage.url_for(key)
+
+
+def _lavfi_audio(key: str, source: str, filters: str, duration_sec: float) -> Optional[str]:
+    """Render a synthetic but audible track. Mock audio that is pure silence
+    makes the mixer, the ducking and the loudness QC untestable, so the mock
+    providers produce something that actually has an envelope."""
+    if not (settings.ENABLE_LOCAL_RENDER and ffmpeg_available()):
+        return None
+    storage = get_storage()
+    out_path = storage.local_path(key)
+    if out_path is None:  # pragma: no cover - object storage
+        return None
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        settings.FFMPEG_BIN, "-hide_banner", "-nostdin", "-y",
+        "-f", "lavfi", "-i", f"{source}:duration={max(duration_sec, 1):.2f}:sample_rate=48000",
+        "-af", filters, "-c:a", "aac", "-b:a", "128k", out_path,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+    except Exception:
+        return None
+    return storage.url_for(key)
+
+
+def save_voice_audio(key: str, duration_sec: float) -> Optional[str]:
+    """Speech-shaped placeholder voice-over (amplitude envelope like speech)."""
+    return _lavfi_audio(
+        key, "sine=frequency=185",
+        "tremolo=f=4.2:d=0.86,volume=0.62,highpass=f=95,lowpass=f=3600,"
+        "aformat=channel_layouts=stereo",
+        duration_sec,
+    ) or save_silent_audio(key, duration_sec)
+
+
+def save_music_audio(key: str, duration_sec: float) -> Optional[str]:
+    """Music-shaped placeholder bed — steady, wide, well under the voice."""
+    return _lavfi_audio(
+        key, "sine=frequency=110",
+        "volume=0.45,lowpass=f=6500,aecho=0.8:0.7:60:0.35,aformat=channel_layouts=stereo",
+        duration_sec,
+    ) or save_silent_audio(key, duration_sec)

@@ -29,6 +29,7 @@ from app.services import storyboards as storyboard_service
 from app.services import voices as voice_service
 from app.services.analysis import run_analysis
 from app.services.jobs import execute_job
+from app.seed_media import DEMO_PHOTOS, build_demo_media
 from app.services.media_placeholder import save_clip, save_frame
 
 DEMO_IMAGES = [
@@ -44,83 +45,100 @@ DEMO_IMAGES = [
 
 
 def _create_demo_assets(db: Session, org: Organization, project: Project) -> List[Asset]:
+    """Give the demo project REAL media so the real pipeline has real work.
+
+    Vector placeholders would make photo motion, remixing and QC meaningless —
+    there would be nothing to pan across, cut or measure. These are synthesised
+    files, but they are genuine JPEG/H.264/AAC with real pixels and real shot
+    changes.
+    """
+    media = build_demo_media(project.id)
     assets: List[Asset] = []
-    for index, (category, title_ar, subtitle) in enumerate(DEMO_IMAGES):
-        key = f"demo/{project.id}/image-{index + 1}.svg"
-        url = save_frame(
-            key,
-            seed=f"warda-{index}",
-            title_ar=title_ar,
-            subtitle=subtitle,
-            badge=f"SOURCE {index + 1}",
-            width=1080,
-            height=1350,
-        )
+
+    for record in media["photos"]:
+        photo = record["meta"]
         asset = Asset(
             organization_id=org.id,
             project_id=project.id,
             kind="image",
-            filename=f"madinat-alward-{index + 1}.jpg",
-            storage_key=key,
-            url=url,
-            thumbnail_url=url,
-            mime_type="image/svg+xml",
-            size_bytes=48_000,
-            width=1080,
-            height=1350,
-            orientation="portrait",
-            category=category,
-            is_project_reference=index < 3,
-            tags=["مدينة الورد", category],
+            filename=f"{photo.key}.jpg",
+            storage_key=record["key"],
+            url=record["url"],
+            thumbnail_url=record["url"],
+            mime_type="image/jpeg",
+            size_bytes=record["size_bytes"],
+            width=record["width"],
+            height=record["height"],
+            orientation="portrait" if record["height"] > record["width"] else "landscape",
+            category=photo.category,
+            is_project_reference=photo.is_reference,
+            suggested_use=photo.subtitle,
+            tags=["مدينة الورد", photo.category],
         )
         db.add(asset)
         assets.append(asset)
 
-    clip_key = f"demo/{project.id}/site-tour.mp4"
-    clip_url = save_clip(clip_key, seed="warda-tour", duration_sec=12.0, label="Site Tour", width=540, height=960)
-    poster = save_frame(
-        f"demo/{project.id}/site-tour.svg", seed="warda-tour", title_ar="جولة بالموقع",
-        subtitle="Site tour — 12s", badge="SOURCE VIDEO", width=1080, height=1350,
-    )
-    video = Asset(
-        organization_id=org.id,
-        project_id=project.id,
-        kind="video",
-        filename="site-tour.mp4",
-        storage_key=clip_key,
-        url=clip_url or poster,
-        thumbnail_url=poster,
-        mime_type="video/mp4",
-        size_bytes=1_200_000,
-        width=1080,
-        height=1920,
-        duration_sec=12.0,
-        orientation="portrait",
-        tags=["مدينة الورد", "tour"],
-    )
-    db.add(video)
-    assets.append(video)
-
-    logo = save_frame(
-        f"demo/{project.id}/logo.svg", seed="tadafq-logo", title_ar="مدينة الورد",
-        subtitle="TADAFQ", badge="LOGO", width=600, height=600,
-    )
-    db.add(
-        Asset(
-            organization_id=org.id, project_id=project.id, kind="logo", filename="logo.svg",
-            url=logo, thumbnail_url=logo, mime_type="image/svg+xml", width=600, height=600,
-            orientation="square", tags=["brand"],
+    video_record = media.get("video")
+    if video_record:
+        video = Asset(
+            organization_id=org.id,
+            project_id=project.id,
+            kind="video",
+            filename="site-tour.mp4",
+            storage_key=video_record["key"],
+            url=video_record["url"],
+            thumbnail_url=assets[0].url if assets else None,
+            mime_type="video/mp4",
+            size_bytes=video_record["size_bytes"],
+            width=video_record["width"],
+            height=video_record["height"],
+            duration_sec=video_record["duration_sec"],
+            orientation="landscape",
+            category="tour",
+            tags=["مدينة الورد", "tour"],
         )
-    )
+        db.add(video)
+        assets.append(video)
+
+    logo_record = media.get("logo")
+    if logo_record:
+        db.add(
+            Asset(
+                organization_id=org.id, project_id=project.id, kind="logo",
+                filename="logo.png", storage_key=logo_record["key"],
+                url=logo_record["url"], thumbnail_url=logo_record["url"],
+                mime_type="image/png", size_bytes=logo_record["size_bytes"],
+                width=logo_record["width"], height=logo_record["height"],
+                orientation="square", tags=["brand"],
+            )
+        )
     db.flush()
+
+    # Measure what was just written, exactly as a customer upload would be.
+    from app.services.assets import analyze_asset
+
+    for asset in assets:
+        try:
+            analyze_asset(db, asset)
+        except Exception as exc:  # noqa: BLE001 - seeding must never hard-fail
+            print(f"  ! analysis skipped for {asset.filename}: {exc}")
+    db.flush()
+    project.thumbnail_url = project.thumbnail_url or (assets[0].url if assets else None)
     return assets
 
 
 def _run_jobs_sync(db: Session, project: Project) -> None:
+    """Finish every job before the seeder moves on.
+
+    Jobs were already dispatched to the background pool, so this claims what is
+    still queued and then waits for the rest. It must never execute a job the
+    pool is already running — two writers on one output file corrupt it.
+    """
     jobs = db.query(GenerationJob).filter(GenerationJob.project_id == project.id).all()
     for job in jobs:
         if job.status in (JobStatus.QUEUED.value, JobStatus.RETRYING.value):
             execute_job(db, job.id)
+    production_service.wait_for_jobs(db, project, timeout_sec=600.0)
 
 
 def seed(reset: bool = False) -> str:
@@ -173,7 +191,8 @@ def seed(reset: bool = False) -> str:
                 editing_style="emotional_cinematic",
                 music_profile={"mood": "warm cinematic", "energy": 0.5},
                 cta_template={"text": "احجز موعد زيارة اليوم", "style": "pill"},
-                end_screen_template={"style": "logo_center", "duration_sec": 2.5},
+                end_screen_template={"style": "logo_center", "duration_sec": 2.5,
+                                     "tagline": "سكن ذكي بقلب بغداد"},
                 phone="07701234567",
                 website="tadafq.com",
                 social_handles={"instagram": "@tadafq", "facebook": "tadafq"},
@@ -214,7 +233,16 @@ def seed(reset: bool = False) -> str:
         db.add(project)
         db.flush()
 
-        _create_demo_assets(db, org, project)
+        demo_assets = _create_demo_assets(db, org, project)
+        if not brand.logo_url:
+            logo_asset = (
+                db.query(Asset)
+                .filter(Asset.project_id == project.id, Asset.kind == "logo")
+                .first()
+            )
+            if logo_asset:
+                brand.logo_url = logo_asset.url
+                db.flush()
         db.commit()
 
         # --- Analysis ----------------------------------------------------

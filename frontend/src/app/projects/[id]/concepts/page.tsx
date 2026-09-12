@@ -39,7 +39,7 @@ export default function ConceptsPage() {
 }
 
 function ConceptsView({ project, reloadProject }: { project: ProjectDetail; reloadProject: () => void }) {
-  const { t, locale, money, num } = useLocale();
+  const { t, locale, num } = useLocale();
   const router = useRouter();
   const { directorMode } = useDirectorMode();
   const { data, error, loading, reload } = useApi<ConceptsPayload>(`/projects/${project.id}/concepts`);
@@ -204,6 +204,15 @@ function ConceptsView({ project, reloadProject }: { project: ProjectDetail; relo
   );
 }
 
+function DirectorMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="truncate text-[10px] uppercase tracking-wider text-slate-500">{label}</dt>
+      <dd className="ltr-nums truncate text-slate-200">{value}</dd>
+    </div>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
@@ -262,16 +271,16 @@ function ConceptCard({
           }}
           className="font-medium text-accent hover:underline"
         >
-          {t.common.edit}
+          {t.common.details}
         </button>
       </div>
 
       {directorMode ? (
-        <div className="mt-3 space-y-1 rounded-xl bg-graphite-900 p-3 text-[11px] text-slate-300">
-          <p>mode: {concept.recommended_mode}</p>
-          <p>voice: {concept.recommended_voice}</p>
-          <p>version: {concept.version}</p>
-        </div>
+        <dl className="mt-3 grid grid-cols-3 gap-2 rounded-xl bg-graphite-900 p-3 text-[11px] text-slate-300">
+          <DirectorMeta label={t.wizard.productionMode} value={concept.recommended_mode.replace(/_/g, ' ')} />
+          <DirectorMeta label={t.voice.title} value={concept.recommended_voice.replace(/_/g, ' ')} />
+          <DirectorMeta label={t.common.version} value={`v${num(concept.version)}`} />
+        </dl>
       ) : null}
 
       {active ? (

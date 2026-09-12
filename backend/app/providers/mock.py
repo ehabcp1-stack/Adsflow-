@@ -24,7 +24,7 @@ from app.providers.base import (
 )
 from app.providers.pricing import estimate_voice_cost
 from app.services import dialect as D
-from app.services.media_placeholder import save_clip, save_frame, save_silent_audio
+from app.services.media_placeholder import save_clip, save_frame, save_music_audio, save_silent_audio, save_voice_audio
 
 
 def _rng(seed: str) -> random.Random:
@@ -276,7 +276,11 @@ class MockLLMProvider(LLMProvider):
         if not key_points:
             key_points = ["موقع قريب من كل شي تحتاجه", "تصاميم مدروسة للعائلة", "أقساط مريحة وتسليم واضح"]
 
+        # The project name has to be *said*, not implied: QC treats a reel that
+        # never names the project as a real defect, and so does a buyer.
         hook = concept.get("hook") or rng.choice(preset["openers"])
+        if name and name not in hook:
+            hook = f"{hook} — {name}".strip(" —")
         if variant == "more_sales":
             hook = f"دفعة أولى وتستلم مفتاحك بـ{name}."
         elif variant == "more_emotional":
@@ -293,7 +297,13 @@ class MockLLMProvider(LLMProvider):
         elif variant == "more_emotional":
             body_lines.append("تخيل ضحكة أطفالك بأول يوم بالبيت الجديد.")
 
+        # The closing line carries the contact number. An ad that asks people to
+        # call without telling them what to call is the most expensive kind of
+        # mistake, so the brand phone is spoken and shown when we have one.
+        phone = (ctx.get("brand", {}) or {}).get("phone") or ""
         cta_line = f"{cta_text} — {rng.choice(preset['closers'])}"
+        if phone:
+            cta_line = f"{cta_text} — اتصل على {D.spell_phone(phone)}"
 
         lines: List[Dict[str, Any]] = []
         cursor = 0.0
@@ -307,7 +317,11 @@ class MockLLMProvider(LLMProvider):
                     "index": idx,
                     "role": role,
                     "voice_line": text,
-                    "on_screen_text": D.to_on_screen(text),
+                    # Spoken and written diverge on purpose: the voice says the
+                    # number digit by digit, the screen shows it as digits.
+                    "on_screen_text": (
+                        f"{cta_text} · {phone}" if (role == "cta" and phone) else D.to_on_screen(text)
+                    ),
                     "start": round(cursor, 2),
                     "end": round(min(cursor + seconds, duration), 2),
                 }
@@ -556,7 +570,7 @@ class MockVoiceProvider(VoiceProvider):
     def capability(self) -> ProviderCapability:
         return ProviderCapability(
             name="mock", kind="voice", models=["mock-voice-v1"], is_mock=True,
-            notes="Demo Iraqi voice profiles with real timing + silent audio track.",
+            notes="Demo Iraqi voice profiles with real timing and a speech-shaped audio track.",
         )
 
     def list_voices(self) -> List[Dict[str, Any]]:
@@ -569,7 +583,7 @@ class MockVoiceProvider(VoiceProvider):
         started = time.time()
         duration = D.estimate_speech_seconds(text, speed)
         digest = hashlib.md5(f"{voice_id}:{text}:{speed}".encode()).hexdigest()[:16]
-        url = save_silent_audio(f"mock/voice/{digest}.m4a", duration)
+        url = save_voice_audio(f"mock/voice/{digest}.m4a", duration)
         return ProviderResult(
             ok=True, provider=self.name, model=model or "mock-voice-v1", operation="voice_generation",
             is_mock=True, cost_usd=0.0, latency_ms=int((time.time() - started) * 1000), url=url,
@@ -596,7 +610,7 @@ class MockMusicProvider(MusicProvider):
     ) -> ProviderResult:
         started = time.time()
         digest = hashlib.md5(str(brief).encode()).hexdigest()[:16]
-        url = save_silent_audio(f"mock/music/{digest}.m4a", duration_sec)
+        url = save_music_audio(f"mock/music/{digest}.m4a", duration_sec)
         return ProviderResult(
             ok=True, provider=self.name, model=model or "mock-music-v1", operation="music_generation",
             is_mock=True, cost_usd=0.0, latency_ms=int((time.time() - started) * 1000), url=url,

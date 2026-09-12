@@ -84,6 +84,24 @@ def finish_production(project: Project = Depends(get_project), db: Session = Dep
     return {"ok": True, "state": project.state}
 
 
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, project: Project = Depends(get_project),
+               db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Cancel a queued or running job.
+
+    The response is deliberately explicit about what cancellation did and did
+    not stop — a job already handed to an external provider may have cost money
+    that cancelling here cannot recover.
+    """
+    from app.models import GenerationJob
+    from app.services.jobs import cancel_job as cancel
+
+    job = db.get(GenerationJob, job_id)
+    if not job or job.project_id != project.id:
+        raise NotFound("Job not found.", "المهمة غير موجودة.")
+    return cancel(db, job)
+
+
 @router.post("/scenes/{scene_id}/regenerate")
 def regenerate_scene(scene_id: str, project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
     scene = db.get(Scene, scene_id)

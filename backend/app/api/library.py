@@ -1,7 +1,7 @@
 """Media Library, Brand Kits, and product metadata (options, providers, dialects)."""
 from __future__ import annotations
 
-import mimetypes
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.enums import (
-    AssetKind,
     CampaignGoal,
     Dialect,
     EditingStyle,
@@ -28,12 +27,15 @@ from app.core.security import get_current_user
 from app.models import Asset, BrandKit, Project, User, VoiceProfile
 from app.providers.registry import provider_status
 from app.schemas import AssetRegister, BrandKitPayload
+from app.services import assets as assets_service
 from app.services.analysis import analyze_image, analyze_video
+from app.services.assets import asset_payload
 from app.services.dialect import list_presets
 from app.services.editing import CAPTION_TEMPLATES, EDITING_STYLES
 from app.services.exports import VARIANTS as EXPORT_VARIANTS
-from app.services.storage import get_storage
 from app.services.voices import ensure_demo_voices, voice_payload
+
+log = logging.getLogger("adflow.api.library")
 
 router = APIRouter(tags=["library"])
 
@@ -41,31 +43,9 @@ router = APIRouter(tags=["library"])
 # --------------------------------------------------------------------------
 # Assets / Media Library
 # --------------------------------------------------------------------------
-def asset_payload(asset: Asset) -> Dict[str, Any]:
-    return {
-        "id": asset.id,
-        "kind": asset.kind,
-        "filename": asset.filename,
-        "url": asset.url,
-        "thumbnail_url": asset.thumbnail_url or asset.url,
-        "mime_type": asset.mime_type,
-        "size_bytes": asset.size_bytes,
-        "width": asset.width,
-        "height": asset.height,
-        "duration_sec": asset.duration_sec,
-        "orientation": asset.orientation,
-        "quality_score": asset.quality_score,
-        "hero_potential": asset.hero_potential,
-        "usable": asset.usable,
-        "category": asset.category,
-        "suggested_use": asset.suggested_use,
-        "analysis": asset.analysis,
-        "project_id": asset.project_id,
-        "is_generated": asset.is_generated,
-        "is_project_reference": asset.is_project_reference,
-        "tags": asset.tags,
-        "created_at": asset.created_at.isoformat() if asset.created_at else None,
-    }
+# `asset_payload` now lives in app.services.assets (imported above) so the
+# ingestion service and this API return the exact same shape. Re-exported
+# under this name for anything importing it from here.
 
 
 @router.get("/assets")
@@ -93,41 +73,51 @@ async def upload_assets(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    storage = get_storage()
+    """Store each upload for real, reject what doesn't decode, analyse the rest.
+
+    `assets_service.ingest_asset` probes the stored file before trusting
+    anything the browser claimed (name/size/type), so a corrupt or oversized
+    upload raises a bilingual `AdFlowError` here and never becomes an Asset
+    row. Analysis runs synchronously and capped (real Pillow/FFmpeg work, no
+    randomness) — for very large videos this is the honest trade-off noted in
+    `app.services.assets`: moving it to `app.services.jobs` is a follow-up,
+    not something this endpoint pretends to already do.
+    """
     created: List[Asset] = []
     for upload in files:
         data = await upload.read()
-        guessed = upload.content_type or mimetypes.guess_type(upload.filename or "")[0] or "application/octet-stream"
-        detected = kind
-        if guessed.startswith("video/"):
-            detected = AssetKind.VIDEO.value
-        elif guessed.startswith("image/") and kind not in (AssetKind.LOGO.value, AssetKind.REFERENCE.value):
-            detected = AssetKind.IMAGE.value
-        key = f"uploads/{user.organization_id}/{upload.filename}"
-        url = storage.put_bytes(key, data, guessed)
-        asset = Asset(
+        asset = assets_service.ingest_asset(
+            db,
             organization_id=user.organization_id,
             project_id=project_id,
-            kind=detected,
             filename=upload.filename or "asset",
-            storage_key=key,
-            url=url,
-            mime_type=guessed,
-            size_bytes=len(data),
-            orientation="portrait" if detected == AssetKind.IMAGE.value else "landscape",
+            data_or_path=data,
+            kind_hint=kind,
             is_project_reference=is_project_reference,
+            content_type=upload.content_type,
         )
-        db.add(asset)
-        db.flush()
-        asset.analysis = analyze_video(asset) if detected == AssetKind.VIDEO.value else analyze_image(asset)
-        asset.quality_score = asset.analysis.get("quality_score") or asset.analysis.get("quality")
-        asset.hero_potential = asset.analysis.get("hero_potential")
-        asset.usable = asset.analysis.get("usable", True)
-        asset.category = asset.analysis.get("category")
-        asset.suggested_use = asset.analysis.get("suggested_use")
+        assets_service.analyze_asset(db, asset)
         created.append(asset)
     db.commit()
     return {"items": [asset_payload(a) for a in created]}
+
+
+@router.post("/assets/{asset_id}/analyze")
+def reanalyze_asset(
+    asset_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """Re-run real measurement on one already-uploaded asset.
+
+    Useful after a partial or failed analysis, or simply to confirm the
+    stored verdict still holds — it is idempotent, so calling it again never
+    changes an unchanged file's result.
+    """
+    asset = db.get(Asset, asset_id)
+    if not asset or asset.organization_id != user.organization_id:
+        raise NotFound("Asset not found.", "المادة غير موجودة.")
+    assets_service.analyze_asset(db, asset)
+    db.commit()
+    return asset_payload(asset)
 
 
 @router.post("/assets/register", status_code=201)

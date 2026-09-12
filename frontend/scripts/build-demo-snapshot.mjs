@@ -8,8 +8,9 @@
  *
  *   node scripts/build-demo-snapshot.mjs [apiBase]
  */
-import { cp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const API_BASE = process.argv[2] ?? 'http://localhost:8000';
 const API = `${API_BASE}/api/v1`;
@@ -50,6 +51,11 @@ const endpoints = {
   '/meta/options': '/meta/options',
   '/meta/providers': '/meta/providers',
   '/meta/voices': '/meta/voices',
+  // Settings → Providers reads these three; they carry no secret values,
+  // only setting *names* and booleans (see backend/app/api/system.py).
+  '/system/providers': '/system/providers',
+  '/system/pricing': '/system/pricing',
+  '/system/health': '/system/health',
   [p]: p,
   [`${p}/analysis`]: `${p}/analysis`,
   [`${p}/concepts`]: `${p}/concepts`,
@@ -76,6 +82,49 @@ for (const [key, pathname] of Object.entries(endpoints)) {
 await rm(OUT_DIR, { recursive: true, force: true });
 await mkdir(MEDIA_DIR, { recursive: true });
 await cp(STORAGE_DIR, MEDIA_DIR, { recursive: true });
+
+/**
+ * The renderer writes mastering-quality intermediates — correct for a
+ * deliverable, far too heavy for a static demo that ships in the repository
+ * and downloads over a phone connection. Every video is re-encoded once for
+ * the web: 720x1280 is still unmistakably the real reel, at roughly a tenth
+ * of the bytes.
+ */
+async function compressForWeb(dir) {
+  const entries = await readdir(dir, { recursive: true });
+  let before = 0;
+  let after = 0;
+  let converted = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith('.mp4')) continue;
+    const file = path.join(dir, entry);
+    const original = (await stat(file)).size;
+    before += original;
+    if (original < 400_000) {
+      after += original;
+      continue;
+    }
+    const tmp = `${file}.web.mp4`;
+    try {
+      execFileSync(
+        'ffmpeg',
+        ['-hide_banner', '-nostdin', '-y', '-i', file,
+         '-vf', 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',
+         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-pix_fmt', 'yuv420p',
+         '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '96k', tmp],
+        { stdio: 'ignore', timeout: 300_000 },
+      );
+      await rename(tmp, file);
+      converted += 1;
+    } catch {
+      await rm(tmp, { force: true });
+    }
+    after += (await stat(file)).size;
+  }
+  return { before, after, converted };
+}
+
+const compression = await compressForWeb(MEDIA_DIR);
 await writeFile(path.join(OUT_DIR, 'snapshot.json'), JSON.stringify(snapshot), 'utf8');
 
 const files = await readdir(MEDIA_DIR, { recursive: true });
@@ -83,5 +132,7 @@ console.log(
   `\nDemo snapshot ready → public/demo/snapshot.json` +
     `\n  project : ${demo.name} (${demo.id})` +
     `\n  routes  : ${Object.keys(snapshot.routes).length}` +
-    `\n  media   : ${files.length} entries copied`,
+    `\n  media   : ${files.length} entries copied` +
+    `\n  video   : ${compression.converted} re-encoded for web, ` +
+      `${(compression.before / 1e6).toFixed(1)}MB → ${(compression.after / 1e6).toFixed(1)}MB`,
 );

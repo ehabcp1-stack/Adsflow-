@@ -79,6 +79,8 @@ export default function BrandsPage() {
 
       {error ? <ErrorState error={error} onRetry={reload} /> : null}
       {loading && !data ? <LoadingBlock lines={4} /> : null}
+      {/* Deleting a kit can fail (e.g. offline) — say so instead of nothing. */}
+      <InlineError error={remove.error} />
 
       {data && data.items.length === 0 ? (
         <EmptyState
@@ -97,9 +99,11 @@ export default function BrandsPage() {
                   {kit.is_default ? <Badge tone="accent" icon={<Star className="h-3 w-3" />}>{t.common.selected}</Badge> : null}
                   <button
                     type="button"
+                    disabled={remove.pending}
                     onClick={() => void remove.run(kit.id)}
-                    className="rounded-lg p-1.5 text-ink-faint hover:bg-canvas hover:text-danger"
+                    className="rounded-lg p-1.5 text-ink-faint transition hover:bg-canvas hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
                     aria-label={t.common.delete}
+                    title={t.common.delete}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>

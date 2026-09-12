@@ -42,7 +42,7 @@ export default function EditPage() {
 }
 
 function EditView({ project, reloadProject }: { project: ProjectDetail; reloadProject: () => void }) {
-  const { t, locale, timecode, num } = useLocale();
+  const { t, locale, num } = useLocale();
   const router = useRouter();
   const { directorMode } = useDirectorMode();
   const { data, error, loading, reload } = useApi<EditPayload>(`/projects/${project.id}/edit`);
@@ -171,8 +171,16 @@ function EditView({ project, reloadProject }: { project: ProjectDetail; reloadPr
                     <Layers className="h-3.5 w-3.5 text-ink-faint" />
                     {track.type}
                   </span>
-                  <span className="ltr-nums text-[12px] text-ink-muted">
-                    {track.clips ? `${track.clips.length} clips` : track.url ? 'audio' : '—'}
+                  <span className="text-[12px] text-ink-muted">
+                    {track.clips ? (
+                      <>
+                        <span className="ltr-nums">{num(track.clips.length)}</span> {t.edit.clips}
+                      </>
+                    ) : track.url ? (
+                      t.edit.audio
+                    ) : (
+                      '—'
+                    )}
                   </span>
                 </li>
               ))}
@@ -251,7 +259,7 @@ function EditView({ project, reloadProject }: { project: ProjectDetail; reloadPr
               <Toggle
                 checked={Boolean(settings.duck_music_under_voice)}
                 onChange={(v) => void update.run({ duck_music_under_voice: v })}
-                label="Audio ducking"
+                label={t.edit.ducking}
               />
               <Slider
                 label={t.edit.voiceVolume}

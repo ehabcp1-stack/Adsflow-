@@ -53,11 +53,30 @@ services:
              python -m app.seed &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
-  # Optional: uncomment to run generation on Celery workers instead of inline.
-  # worker:
-  #   build: { context: ./backend }
-  #   environment:
-  #     DATABASE_URL: postgresql+psycopg://adflow:adflow@postgres:5432/adflow
+  # Generation and rendering on a separate process, so a 40-second render
+  # never delays an HTTP request. Switch JOB_BACKEND to celery on the backend
+  # service too, otherwise jobs still run inline there.
+  worker:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://adflow:adflow@postgres:5432/adflow
+      REDIS_URL: redis://redis:6379/0
+      JOB_BACKEND: celery
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_DIR: /app/storage
+      PUBLIC_MEDIA_BASE_URL: http://localhost:8000/media
+      FORCE_MOCK_PROVIDERS: 'true'
+      LOG_FORMAT: json
+    volumes: ['./backend:/app', 'mediadata:/app/storage']
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2
+    profiles: ['celery']
+
+  # Legacy note kept for reference:
+  #   DATABASE_URL: postgresql+psycopg://adflow:adflow@postgres:5432/adflow
   #     REDIS_URL: redis://redis:6379/0
   #     JOB_BACKEND: celery
   #   volumes: ['./backend:/app', 'mediadata:/app/storage']

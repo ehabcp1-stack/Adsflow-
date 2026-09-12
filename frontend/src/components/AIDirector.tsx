@@ -15,11 +15,18 @@ import { Badge, Button } from './ui';
 export function AIDirector({
   notes,
   onAction,
+  pending,
   compact = false,
   className,
 }: {
   notes?: DirectorNote[] | null;
+  /**
+   * Applies a note's `action` payload. Only screens that can actually carry
+   * the action out pass this — elsewhere the note stays advisory and renders
+   * no button, rather than an inert one.
+   */
   onAction?: (note: DirectorNote) => void;
+  pending?: boolean;
   compact?: boolean;
   className?: string;
 }) {
@@ -55,8 +62,8 @@ export function AIDirector({
                     : t.director.impactLow}
               </Badge>
               {note.action && onAction ? (
-                <Button size="sm" variant="secondary" onClick={() => onAction(note)}>
-                  {t.common.approve}
+                <Button size="sm" variant="secondary" disabled={pending} onClick={() => onAction(note)}>
+                  {t.common.apply}
                 </Button>
               ) : null}
             </div>

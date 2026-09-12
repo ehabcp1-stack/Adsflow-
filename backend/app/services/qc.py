@@ -16,6 +16,7 @@ from app.core.errors import NotFound
 from app.models import BrandKit, Project, QCReport, Render, ScriptVersion, Storyboard
 from app.providers.registry import get_llm
 from app.services import approvals as approval_service
+from app.services import qc_checks
 from app.services.editing import active_render
 from app.services.storyboards import active_storyboard
 
@@ -42,6 +43,8 @@ CRITICAL_CODES = {
     "arabic_error",
     "product_distortion",
     "missing_cta",
+    "missing_audio",
+    "unintelligible_voice",
 }
 
 
@@ -89,6 +92,11 @@ def run_qc(db: Session, project: Project, *, render: Optional[Render] = None) ->
     script = db.get(ScriptVersion, project.selected_script_id) if project.selected_script_id else None
     brand = db.get(BrandKit, project.brand_kit_id) if project.brand_kit_id else None
 
+    # Evidence first: what is measurably true about the file we produced.
+    deterministic = qc_checks.run_deterministic_checks(
+        db, project, render, script=script, brand=brand, storyboard=storyboard
+    )
+
     llm_out = get_llm().complete_json(
         task="qc",
         context={
@@ -99,7 +107,36 @@ def run_qc(db: Session, project: Project, *, render: Optional[Render] = None) ->
         },
     ).data
 
-    scores: Dict[str, float] = llm_out.get("scores", {})
+    scores: Dict[str, float] = dict(llm_out.get("scores", {}))
+
+    # A failed measurement outranks an opinion: each deterministic failure
+    # pushes the dimension it belongs to down, so the weighted score cannot
+    # stay high while the file is objectively wrong.
+    DIMENSION_OF = {
+        "output_missing": "visual_quality", "output_exists": "visual_quality",
+        "container_is_video": "visual_quality", "resolution_1080x1920": "platform_fit",
+        "codec_h264": "platform_fit", "file_not_empty": "visual_quality",
+        "duration_matches_plan": "platform_fit",
+        "has_audio_track": "audio_voice", "loudness_in_range": "audio_voice",
+        "loudness_measured": "audio_voice", "music_ducked_under_voice": "audio_voice",
+        "captions_rendered": "arabic_quality", "captions_in_safe_zone": "platform_fit",
+        "arabic_captions_rtl": "arabic_quality",
+        "brand_layer_present": "brand_consistency", "end_screen_present": "brand_consistency",
+        "phone_matches_brand_kit": "brand_consistency",
+        "cta_present": "marketing_effectiveness", "cta_in_copy": "marketing_effectiveness",
+        "project_name_present": "brand_consistency",
+    }
+    for failure in deterministic["failures"]:
+        dimension = DIMENSION_OF.get(failure["code"])
+        if not dimension:
+            continue
+        penalty = 22 if failure["severity"] == "critical" else 7
+        scores[dimension] = max(round(scores.get(dimension, 90) - penalty, 1), 0.0)
+    if deterministic["placeholder_render"]:
+        # A placeholder reel is not a deliverable and must never score as one.
+        for dimension in ("visual_quality", "marketing_effectiveness"):
+            scores[dimension] = min(scores.get(dimension, 90), 60.0)
+
     if storyboard and storyboard.scenes:
         avg_scene = sum((s.quality_score or 90) for s in storyboard.scenes) / len(storyboard.scenes)
         scores["visual_quality"] = round((scores.get("visual_quality", 90) + avg_scene) / 2, 1)
@@ -108,9 +145,32 @@ def run_qc(db: Session, project: Project, *, render: Optional[Render] = None) ->
 
     total = round(sum(scores.get(key, 85) * weight for key, weight in WEIGHTS.items()) / sum(WEIGHTS.values()), 1)
 
-    issues = _critical_checks(project, script, brand, storyboard) + [
-        dict(item, severity=item.get("severity", "warning")) for item in llm_out.get("issues", [])
+    measured_issues = [
+        {
+            "code": qc_checks.CRITICAL_CODE_MAP.get(failure["code"], failure["code"]),
+            "severity": failure["severity"],
+            "message_en": failure["message_en"],
+            "message_ar": failure["message_ar"],
+            "source": "deterministic",
+            "check": failure["code"],
+        }
+        for failure in deterministic["failures"]
     ]
+    issues = measured_issues + _critical_checks(project, script, brand, storyboard) + [
+        dict(item, severity=item.get("severity", "warning"), source="model")
+        for item in llm_out.get("issues", [])
+    ]
+    # De-duplicate: a measured failure always wins over the model saying the
+    # same thing, so the report never lists an issue twice.
+    seen: set = set()
+    deduped = []
+    for item in issues:
+        key = item.get("code")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    issues = deduped
     criticals = [i for i in issues if i.get("severity") == "critical" and i.get("code") in CRITICAL_CODES]
 
     if criticals:
@@ -123,6 +183,15 @@ def run_qc(db: Session, project: Project, *, render: Optional[Render] = None) ->
         verdict = "fix_required"
 
     checks = [
+        {
+            "level": "deterministic",
+            "label_en": "File checks",
+            "label_ar": "فحوصات الملف",
+            "passed": deterministic["all_passed"],
+            "score": round(100.0 * deterministic["passed"] / max(deterministic["total"], 1), 1),
+            "detail": deterministic["checks"],
+        }
+    ] + [
         {
             "level": level["key"],
             "label_en": level["label_en"],

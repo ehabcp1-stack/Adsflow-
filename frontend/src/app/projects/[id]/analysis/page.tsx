@@ -7,7 +7,6 @@ import { useEffect, useState } from 'react';
 import { AIDirector } from '@/components/AIDirector';
 import { ProjectFrame } from '@/components/ProjectFrame';
 import {
-  Badge,
   Button,
   Card,
   CardTitle,
@@ -15,7 +14,6 @@ import {
   ErrorState,
   InlineError,
   LoadingBlock,
-  Progress,
   Stat,
 } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';

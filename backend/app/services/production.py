@@ -28,15 +28,8 @@ from app.providers.registry import get_image, get_music, get_video, get_voice
 from app.services import approvals as approval_service
 from app.services import costs as cost_service
 from app.services.jobs import create_job, dispatch, register_handler, set_progress
-from app.services.media_placeholder import save_clip, save_frame
+from app.services.scene_render import LOCAL_METHODS, render_local_scene
 from app.services.storyboards import active_storyboard
-
-LOCAL_METHODS = {
-    ProductionMethod.ORIGINAL_VIDEO.value,
-    ProductionMethod.ORIGINAL_PHOTO.value,
-    ProductionMethod.PHOTO_MOTION.value,
-    ProductionMethod.MOTION_GRAPHICS.value,
-}
 
 
 def _scene_job_type(scene: Scene) -> str:
@@ -191,29 +184,23 @@ def _produce_scene(db: Session, job: GenerationJob) -> Dict[str, Any]:
     provider_name = scene.recommended_provider
     model = scene.recommended_model
     cost = 0.0
+    local_media: Dict[str, Any] = {}
 
     if scene.production_method in LOCAL_METHODS:
+        # No provider, no spend: the customer's own material is rendered here.
         set_progress(db, job, 0.45, "rendering locally from your media")
-        poster = save_frame(
-            f"projects/{project.id}/scenes/{scene.id}.svg",
-            seed=scene.id,
-            title_ar=scene.on_screen_text or scene.purpose,
-            subtitle=scene.production_method.replace("_", " "),
-            badge=f"SCENE {scene.scene_number}",
-            width=720,
-            height=1280,
+        media = render_local_scene(db, project, scene)
+        result_url = media["url"]
+        if media.get("thumbnail_url"):
+            scene.thumbnail_url = media["thumbnail_url"]
+        quality = judge_scene(
+            scene={"id": scene.id, "production_method": scene.production_method},
+            result_meta={"real_media": media.get("real_media", False),
+                         "renderer": media.get("renderer")},
+            attempt=attempt,
         )
-        clip = save_clip(
-            f"projects/{project.id}/scenes/{scene.id}.mp4",
-            seed=scene.id,
-            duration_sec=duration,
-            label=f"Scene {scene.scene_number}",
-            width=540,
-            height=960,
-        )
-        result_url = clip or poster
-        quality = judge_scene(scene={"id": scene.id, "production_method": scene.production_method}, result_meta={}, attempt=attempt)
-        provider_name, model = "local", "ffmpeg-pipeline"
+        provider_name, model = "local", media.get("renderer", "ffmpeg-pipeline")
+        local_media = media
     else:
         if scene.production_method == ProductionMethod.AI_VIDEO.value:
             set_progress(db, job, 0.35, "generating cinematic video")
@@ -286,6 +273,9 @@ def _produce_scene(db: Session, job: GenerationJob) -> Dict[str, Any]:
         "attempts": scene.generation_attempts,
         "provider": provider_name,
         "model": model,
+        "renderer": local_media.get("renderer"),
+        "real_media": local_media.get("real_media", provider_name not in ("local",)),
+        "note": local_media.get("note"),
     }
 
 

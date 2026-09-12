@@ -373,6 +373,12 @@ export type BrandKit = {
   created_at: string | null;
 };
 
+/**
+ * Legacy provider row from `GET /meta/providers` and the `providers` key of
+ * `GET /settings`. Settings → Providers now reads the richer per-model
+ * `SystemModel` from `GET /system/providers`; this shape is kept because both
+ * backend endpoints still return it.
+ */
 export type ProviderStatus = {
   kind: string;
   name: string;
@@ -383,6 +389,84 @@ export type ProviderStatus = {
   available: boolean;
   active: boolean;
   notes: string;
+};
+
+/** One (provider, model) row from `GET /system/providers`. */
+export type SystemModel = {
+  kind: string;
+  provider: string;
+  model_id: string;
+  display_name: string;
+  /** Key present (or none needed). Never carries the key itself. */
+  configured: boolean;
+  key_present: boolean;
+  /** Name of the backend settings variable, e.g. "OPENAI_API_KEY" — never its value. */
+  requires_key: string | null;
+  enabled: boolean;
+  healthy: boolean;
+  last_error: string | null;
+  is_mock: boolean;
+  is_default: boolean;
+  fallback_priority: number;
+  quality_tier: string;
+  latency_tier: string;
+  cost_unit: string;
+  cost_per_unit: number;
+  capabilities: string[];
+  supports_reference_image: boolean;
+  supports_image_to_video: boolean;
+  notes_ar: string;
+  notes_en: string;
+};
+
+export type SystemProviders = {
+  force_mock: boolean;
+  runtime_mode: 'mock' | 'real';
+  kinds: string[];
+  by_kind: Record<string, SystemModel[]>;
+  totals: { models: number; configured: number; healthy: number; mock: number };
+};
+
+export type SystemHealth = {
+  app: string;
+  parent_brand: string;
+  env: string;
+  runtime_mode: 'mock' | 'real';
+  force_mock_providers: boolean;
+  storage_backend: string;
+  job_backend: string;
+  local_render_enabled: boolean;
+  ffmpeg_available: boolean;
+  ffprobe_available: boolean;
+};
+
+export type SystemPricing = {
+  by_kind: Record<
+    string,
+    { provider_id: string; model_id: string; display_name: string; cost_unit: string; cost_per_unit: number; quality_tier: string; enabled: boolean }[]
+  >;
+  method_base_cost: Record<string, number>;
+  flat_costs: Record<string, number>;
+};
+
+/** `GET /projects/{id}/costs` — budget snapshot + breakdown + full ledger. */
+export type CostEntry = {
+  id: string;
+  provider: string;
+  model: string;
+  operation: string;
+  estimated_cost_usd: number;
+  actual_cost_usd: number;
+  status: string;
+  is_mock: boolean;
+  scene_id: string | null;
+  created_at: string | null;
+};
+
+export type ProjectCosts = BudgetSnapshot & {
+  by_operation: Record<string, number>;
+  by_scene: Record<string, number>;
+  ledger: CostEntry[];
 };
 
 export type EditingStyleOption = {

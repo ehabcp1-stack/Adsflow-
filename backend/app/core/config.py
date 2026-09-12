@@ -72,6 +72,41 @@ class Settings(BaseSettings):
 
     FORCE_MOCK_PROVIDERS: bool = True
 
+    # --- Provider HTTP behaviour (app/providers/http.py) ------------------
+    PROVIDER_TIMEOUT_SEC: float = 120.0
+    PROVIDER_MAX_RETRIES: int = 2
+    # Async video jobs (submit -> poll -> fetch) — bounds the poll loop so a
+    # stuck vendor job can never hang a background worker forever.
+    PROVIDER_POLL_TIMEOUT_SEC: float = 600.0
+    PROVIDER_POLL_INTERVAL_SEC: float = 5.0
+
+    # --- Provider model IDs (app/providers/catalog.py) ---------------------
+    # CRITICAL: none of these are verified against live vendor docs from this
+    # environment (no network, no API keys). They are the product's existing,
+    # already-named model identifiers, kept here ONLY so an operator can
+    # override them without a code change. Before enabling a real adapter,
+    # confirm the current model id in the vendor's own documentation and set
+    # it here — never trust these values as fact.
+    OPENAI_LLM_MODEL: Optional[str] = None
+    GEMINI_LLM_MODEL: Optional[str] = None
+    OPENAI_IMAGE_MODEL: Optional[str] = None
+    GEMINI_IMAGE_MODEL: Optional[str] = None
+    VEO_VIDEO_MODEL: Optional[str] = None
+    RUNWAY_VIDEO_MODEL: Optional[str] = None
+    SEEDANCE_VIDEO_MODEL: Optional[str] = None
+    ELEVENLABS_VOICE_MODEL: Optional[str] = None
+    MUSIC_MODEL: Optional[str] = None
+
+    # --- Provider base URLs (app/providers/http.py adapters) ---------------
+    # Same caveat: unverified from this environment. Override per-operator.
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
+    ELEVENLABS_BASE_URL: str = "https://api.elevenlabs.io/v1"
+    RUNWAY_BASE_URL: str = "https://api.dev.runwayml.com/v1"
+    VEO_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
+    SEEDANCE_BASE_URL: str = "https://api.bytedance.com/v1"
+    MUSIC_BASE_URL: str = "https://api.example-music-provider.invalid/v1"
+
     # --- Cost / budget ---------------------------------------------------
     DEFAULT_PROJECT_BUDGET_USD: float = 12.0
     MONTHLY_BUDGET_TARGET_USD: float = 50.0
@@ -80,6 +115,26 @@ class Settings(BaseSettings):
     QC_REVIEW_THRESHOLD: float = 85.0
     SCENE_QUALITY_THRESHOLD: float = 90.0
     DEFAULT_QUALITY_LEVEL: str = "smart_premium"
+    # Hard ceiling on what a single "test this provider connection" action may
+    # spend — see providers/pricing.guard_integration_spend(). No real keys
+    # exist in dev, but this stays enforced everywhere so it is never an
+    # afterthought in production.
+    INTEGRATION_TEST_BUDGET_USD: float = 1.0
+
+    # --- Webhooks --------------------------------------------------------
+    # Fail-closed: without a secret the callback endpoint rejects everything,
+    # because a webhook that trusts any caller is worse than no webhook.
+    WEBHOOK_SECRET: Optional[str] = None
+    VEO_WEBHOOK_SECRET: Optional[str] = None
+    RUNWAY_WEBHOOK_SECRET: Optional[str] = None
+    SEEDANCE_WEBHOOK_SECRET: Optional[str] = None
+
+    # --- Uploads ---------------------------------------------------------
+    MAX_UPLOAD_MB: int = 400
+
+    # --- Logging ---------------------------------------------------------
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "human"  # "json" in production
 
     # --- Media -----------------------------------------------------------
     FFMPEG_BIN: str = "ffmpeg"

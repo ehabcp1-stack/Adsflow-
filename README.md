@@ -88,6 +88,46 @@ Switch **AR / EN** in the sidebar at any time — the whole app flips direction.
 
 ---
 
+## 2b. What is actually real
+
+This matters more than a feature list, so it is stated plainly.
+
+**Real — runs here, verified by tests that inspect the output file:**
+
+- 1080x1920 H.264/AAC MP4 output, produced by FFmpeg from your own material
+- Photo Motion: push in, pull out, pan, tilt, Ken Burns, controlled zoom —
+  eased, never aggressive
+- Video Remix on uploaded footage: trim, speed, 9:16 reframe (crop / blurred
+  pad / letterbox), colour grade, stabilise, strip original audio, concatenate
+- Shot detection: real scene-cut boundaries with per-segment quality, hook
+  potential and keep/trim/drop recommendations
+- Arabic captions rasterised by us — correct shaping and RTL order, mixed
+  Arabic + Latin + digits, platform safe zones, brand font and colour
+- Brand layer: logo, CTA card with the real phone number, branded end screen
+- Audio: voice + music + SFX mixed, music ducked under the voice by sidechain
+  compression, mastered to about −14 LUFS
+- Motion graphics for offer/info scenes — typography, not generated video
+- Deterministic QC against the produced file: resolution, codec, audio track,
+  loudness, captions drawn and inside the safe zone, CTA present, phone
+  matching the Brand Kit
+- Export variants re-assembled with the layer genuinely switched off
+- Asset ingestion: real MIME/size/corruption validation and FFprobe metadata
+- Iraqi script QA: a deterministic second pass that scores and repairs the copy
+
+**Architecture complete, but never run against a live vendor API:** the
+adapters for OpenAI, Gemini, Veo, Runway, Seedance, ElevenLabs and music. The
+request building, response parsing, structured-output validation with a single
+repair retry, async job polling, retry/backoff, usage-based costing and
+credential redaction are all written and unit-tested — but no key exists in
+this environment, so none of it has spoken to a real endpoint. Endpoints and
+model IDs in `backend/app/providers/catalog.py` are **configuration with
+documented defaults, not verified facts**; confirm each against the vendor's
+current documentation before enabling it. Every one is overridable by an
+environment variable, so that never needs a code change.
+
+**Not done:** no provider account, no hosted backend, no DNS or TLS. See
+`deploy/PRODUCTION.md` for exactly what remains.
+
 ## 3. Architecture
 
 ```
@@ -319,7 +359,8 @@ it does not create duplicate sites.
 ## 6. Testing & quality
 
 ```bash
-# backend
+# backend — 200 tests, including a media suite that probes real output files
+# (it renders actual MP4s, so it takes about a minute)
 cd backend && .venv/bin/python -m pytest -q          # 54 tests
 alembic upgrade head && alembic check                # migration check
 
@@ -369,6 +410,26 @@ Provider keys (all optional): `OPENAI_API_KEY`, `GEMINI_API_KEY`,
 | Fonts look plain | Google Fonts blocked/offline; the local fallback stack is used |
 | `Demo user is not seeded` | `cd backend && python -m app.seed` |
 | Netlify deploy succeeds but **every route 404s** | `publish` was missing, so Netlify shipped `frontend/` (the source tree) instead of the build. `netlify.toml` must set `publish = ".next"` and declare `@netlify/plugin-nextjs`. Check the deploy's file browser — if you see `src/`, `package.json` and `tsconfig.json`, that is the symptom. |
+
+---
+
+## 8b. Production deployment
+
+Netlify hosts the frontend only. The backend is a container with Postgres,
+Redis, S3-compatible storage and FFmpeg — see **`deploy/PRODUCTION.md`** for the
+build, the release-step migration, `/health` vs `/ready`, the variables that
+matter, and the order in which to verify a real backend before retiring mock
+mode.
+
+```bash
+docker build -t adflow-api ./backend
+docker run --rm --env-file .env adflow-api alembic upgrade head   # release step
+docker run -p 8000:8000 --env-file .env adflow-api
+```
+
+The image ships FFmpeg and Arabic fonts and runs as a non-root user. Without
+either, the product cannot produce a deliverable — captions would render as
+empty boxes and nothing would encode.
 
 ---
 

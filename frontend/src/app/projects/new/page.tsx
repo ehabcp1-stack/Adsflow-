@@ -112,15 +112,18 @@ function NewProjectWizard() {
       <ol className="mb-6 flex flex-wrap gap-2">
         {STEP_KEYS.map((key, index) => (
           <li key={key}>
+            {/* Steps ahead of the current one are not reachable yet, so they
+                are visibly disabled rather than silently inert. */}
             <button
               type="button"
-              onClick={() => index <= step && setStep(index)}
+              disabled={index > step}
+              onClick={() => setStep(index)}
               className={`flex items-center gap-2 rounded-xl px-3 py-1.5 text-[13px] font-medium transition ${
                 index === step
                   ? 'bg-ink text-white'
                   : index < step
-                    ? 'bg-ok/10 text-ok'
-                    : 'bg-surface text-ink-faint border border-line'
+                    ? 'bg-ok/10 text-ok hover:bg-ok/15'
+                    : 'cursor-not-allowed border border-line bg-surface text-ink-faint opacity-60'
               }`}
             >
               <span className="ltr-nums flex h-4.5 w-4.5 items-center justify-center text-[11px]">

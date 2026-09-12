@@ -88,8 +88,15 @@ function QCView({ project, reloadProject }: { project: ProjectDetail; reloadProj
           <p className="ltr-nums mt-2 text-[12px] text-ink-faint">
             v{num(report.version)} · ≥{num(report.thresholds.approve)} {t.qc.approved}
           </p>
-          <Button size="sm" variant="secondary" className="mt-4" loading={run.pending} onClick={() => void run.run()}>
-            {run.pending ? t.qc.running : t.common.retry}
+          <Button
+            size="sm"
+            variant="secondary"
+            className="mt-4"
+            icon={<Play className="h-3.5 w-3.5" />}
+            loading={run.pending}
+            onClick={() => void run.run()}
+          >
+            {run.pending ? t.qc.running : t.qc.run}
           </Button>
         </Card>
 

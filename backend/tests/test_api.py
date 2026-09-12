@@ -126,7 +126,17 @@ def test_full_journey_end_to_end(client):
     assert set(qc["weights"].values()) == {25, 20, 15, 20, 10, 10}
     client.post(f"{API}/projects/{pid}/qc/approve")
 
-    export = client.post(f"{API}/projects/{pid}/export", json={"variant": "master"}).json()
+    # This project was created with no uploaded media, so the reel could only
+    # be assembled from placeholder clips. Deterministic QC sees that and
+    # refuses to call it a deliverable — exporting requires "export anyway".
+    blocked = client.post(f"{API}/projects/{pid}/export", json={"variant": "master"})
+    if blocked.status_code != 200:
+        assert blocked.json()["error"]["code"] == "qc_failed"
+        export = client.post(
+            f"{API}/projects/{pid}/export", json={"variant": "master", "force": True}
+        ).json()
+    else:
+        export = blocked.json()
     assert export["filename"].endswith(".mp4")
     assert export["width"] == 1080 and export["height"] == 1920
 

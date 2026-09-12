@@ -141,7 +141,7 @@ export function AssetUploader({
               {asset.is_project_reference ? (
                 <span className="absolute inset-x-1.5 bottom-1.5">
                   <Badge tone="gold" className="w-full justify-center !text-[9.5px]">
-                    reference
+                    {t.media.reference}
                   </Badge>
                 </span>
               ) : null}

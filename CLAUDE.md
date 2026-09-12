@@ -141,6 +141,49 @@ per provider family.
 
 ---
 
+## 6b. Real media engine — `backend/app/media/`
+
+AdFlow AI produces **actual** 1080x1920 H.264/AAC files. This package is where
+that happens, and nothing in it calls a paid API.
+
+| Module | Responsibility |
+|---|---|
+| `ffmpeg.py` | process runner, capability probe, house encode settings |
+| `probe.py` | FFprobe metadata + corruption detection — never trust the browser |
+| `motion.py` | photo → motion clip (push/pull/pan/tilt/Ken Burns/controlled) |
+| `remix.py` | real trim, speed, 9:16 reframe, grade, stabilise, concat |
+| `captions.py` | Arabic caption rasterisation |
+| `overlays.py` | logo, CTA card, end screen, timed overlay graph |
+| `audio.py` | voice + music + SFX mix, sidechain ducking, loudness mastering |
+| `shots.py` | scene-cut detection and per-segment scoring |
+| `motion_graphics.py` | offer/info cards — typography, never generated video |
+| `assemble.py` | staged assembly with a per-stage report |
+
+Rules:
+
+- **Never assume an FFmpeg filter exists** — `capabilities()` probes the build.
+- Every scene clip is normalised (1080x1920, 30fps, AAC track) so concatenation
+  can never fail on a parameter mismatch. Concatenation uses the concat
+  *filter*, not the demuxer: the demuxer's stream-copy path fails silently.
+- Intermediates use `INTERMEDIATE_VIDEO_ENCODE` (ultrafast); only the master
+  uses the quality settings.
+- `services/media_bridge.py` is the only place that maps storage URLs to local
+  paths, which is what makes `STORAGE_BACKEND=s3` work with no render changes.
+
+### Arabic captions — the one that bites
+
+Pillow with **Raqm** shapes and bidi-orders Arabic correctly, but only when it
+is given **logical** text and `direction="rtl"`. Pre-shaping with
+arabic-reshaper + python-bidi first (the common recipe) double-reverses it and
+produces mirrored Arabic. `captions.shape_for_draw()` picks the right path and
+falls back to reshaper+bidi only when Raqm is absent.
+
+Most Arabic display fonts carry no Latin glyphs, so a line is laid out token by
+token: Arabic runs right-to-left in the Arabic font, Latin/number runs
+left-to-right in the Latin font. Install `fonts-noto-core` (the Docker image
+does). Installing Cairo or Tajawal upgrades the look with no code change.
+
+
 ## 7. Iraqi Arabic requirement
 
 `backend/app/services/dialect.py` is a **dialect style layer**, not translation.
@@ -252,6 +295,16 @@ full regeneration when a smaller fix exists.
 
 ---
 
+## 12b. QC measures the file before it asks a model
+
+`services/qc_checks.py` runs deterministic checks against the rendered file —
+existence, resolution, codec, audio track, loudness, captions actually drawn
+and inside the safe zone, CTA present, phone matching the Brand Kit, project
+name spoken — and a **measured failure outranks a model opinion**. A placeholder
+render can never score as a deliverable.
+
+---
+
 ## 13. Netlify is the primary visual review environment
 
 **The deployed Netlify site is the visual source of truth for the user.**
@@ -340,13 +393,18 @@ backend/                       FastAPI modular monolith (no microservices)
   app/core/                    config · db · enums · errors · security · state_machine
   app/models/                  identity.py (org, user, brand kit, voice, asset)
                                workflow.py (project → export, approvals, costs, jobs)
-  app/providers/               base · mock · adapters · registry · pricing
-                               model_router · prompt_compiler · quality_judge
-  app/services/                analysis · concepts · scripts · dialect · voices
-                               storyboards · production · editing · qc · exports
-                               costs · approvals · jobs · storage · media_placeholder
-                               director
+  app/providers/               base · mock · adapters · registry · catalog · http
+                               schemas · pricing · model_router · prompt_compiler
+                               quality_judge
+  app/media/                   ffmpeg · probe · motion · remix · captions · overlays
+                               audio · shots · motion_graphics · assemble
+  app/services/                analysis · assets · concepts · scripts · script_qa
+                               dialect · voices · storyboards · production
+                               scene_render · editing · qc · qc_checks · exports
+                               costs · approvals · jobs · storage · media_bridge
+                               media_placeholder · director
   app/api/                     auth · projects · workflow · production · library
+                               system · webhooks
   app/seed.py                  demo project «مدينة الورد», full workflow on mocks
   app/worker.py                optional Celery worker
 frontend/                      Next.js 15 App Router · TypeScript · Tailwind
@@ -375,6 +433,53 @@ Storage: local adapter in dev, S3-compatible (MinIO/AWS/R2) in production.
 | Editing styles / captions | `services/editing.py` |
 | QC rules | `services/qc.py` |
 | UI strings | `frontend/src/i18n/dictionary.ts` (both locales, always) |
+| Provider/model metadata | `providers/catalog.py` (never hardcode a model id elsewhere) |
+| Render behaviour | `app/media/*` + `services/scene_render.py` |
+| Deterministic QC checks | `services/qc_checks.py` |
+| Iraqi language rules | `services/dialect.py` + `services/script_qa.py` |
+
+---
+
+## 14c. Jobs, idempotency and cancellation
+
+- `create_job()` carries an **idempotency key**; an identical in-flight job is
+  returned rather than duplicated. A double-clicked button must not become two
+  paid provider calls.
+- `claim_job()` is an atomic conditional UPDATE. Without it two workers can run
+  the same job and two FFmpeg processes write the same file — which produces a
+  corrupt clip that still looks plausible.
+- `cancel_job()` is honest: a queued job costs nothing, a locally running job is
+  discarded, and a job already submitted to a provider says plainly that any
+  cost already incurred still stands.
+- `api/webhooks.py` is **fail-closed**: no configured secret means every
+  callback is rejected. Deliveries are idempotent and cost is never read from
+  the payload.
+
+---
+
+## 14d. Production readiness
+
+- `GET /health` = liveness. `GET /ready` = database + storage + queue + FFmpeg,
+  503 with a per-dependency breakdown when something a render needs is missing.
+- CORS in production uses the configured list only; a wildcard is refused.
+- `core/logging.py` emits JSON with request/job/project ids and **redacts
+  credentials on the way out** — call sites are not trusted to remember.
+- The Docker image ships FFmpeg and Arabic fonts and runs as a non-root user.
+  Migrations are a release step, never a boot step.
+- `deploy/PRODUCTION.md` is the deployment guide.
+
+---
+
+## 14e. Iraqi script QA — second pass
+
+`services/script_qa.py` reviews every generated script deterministically (no
+model call, no cost) across natural Iraqi phrasing, unnecessary MSA, register,
+sales pressure, clarity, hook strength, rhythm, CTA quality, specificity and
+duration fit. It repairs what can be repaired safely and **keeps the original
+if the repair scores worse**. The stored `ScriptVersion.score` is the QA score
+of what the user is actually shown, not the generator's own optimism.
+
+---
 
 ---
 
@@ -392,3 +497,8 @@ Storage: local adapter in dev, S3-compatible (MinIO/AWS/R2) in production.
 - [ ] QC ≥ 90 to approve; critical errors override the score.
 - [ ] `http://localhost:3000` renders after every change.
 - [ ] Both `ar` and `en` strings added for any new UI text.
+- [ ] Output is a real 1080x1920 H.264/AAC file, not a placeholder claiming to be one.
+- [ ] Deterministic QC ran against the actual file before any model opinion.
+- [ ] No credential can reach a log line, an error message or the browser.
+- [ ] A repeated request cannot become a second paid job.
+- [ ] Nothing claims to be verified against a live provider API unless it was.

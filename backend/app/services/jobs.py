@@ -11,6 +11,8 @@ Both share the same GenerationJob rows, so the UI polls one endpoint either way.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +39,43 @@ def register_handler(job_type: str) -> Callable[[JobHandler], JobHandler]:
     return decorator
 
 
+def idempotency_key(project_id: str, job_type: str, scene_id: Optional[str],
+                    payload: Optional[Dict[str, Any]]) -> str:
+    """Stable fingerprint of "this exact piece of work".
+
+    Two identical requests — a double-clicked button, a retried HTTP call —
+    must not become two paid provider jobs.
+    """
+    material = json.dumps(
+        {"p": project_id, "t": job_type, "s": scene_id,
+         "d": {k: v for k, v in (payload or {}).items() if k != "regeneration"}},
+        sort_keys=True, ensure_ascii=False, default=str,
+    )
+    return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
+def find_active_duplicate(db: Session, *, project_id: str, job_type: str,
+                          scene_id: Optional[str],
+                          payload: Optional[Dict[str, Any]]) -> Optional[GenerationJob]:
+    """An in-flight job for the same work, if one exists."""
+    key = idempotency_key(project_id, job_type, scene_id, payload)
+    candidates = (
+        db.query(GenerationJob)
+        .filter(
+            GenerationJob.project_id == project_id,
+            GenerationJob.job_type == job_type,
+            GenerationJob.status.in_(
+                [JobStatus.QUEUED.value, JobStatus.RUNNING.value, JobStatus.RETRYING.value]
+            ),
+        )
+        .all()
+    )
+    for job in candidates:
+        if (job.payload or {}).get("_idempotency_key") == key and job.scene_id == scene_id:
+            return job
+    return None
+
+
 def create_job(
     db: Session,
     *,
@@ -46,13 +85,23 @@ def create_job(
     scene_id: Optional[str] = None,
     estimated_cost_usd: float = 0.0,
     max_attempts: int = 3,
+    reuse_active: bool = True,
 ) -> GenerationJob:
+    """Create a job, or hand back the identical one already in flight."""
+    body = dict(payload or {})
+    if reuse_active:
+        existing = find_active_duplicate(
+            db, project_id=project.id, job_type=job_type, scene_id=scene_id, payload=body
+        )
+        if existing is not None:
+            return existing
+    body["_idempotency_key"] = idempotency_key(project.id, job_type, scene_id, body)
     job = GenerationJob(
         project_id=project.id,
         scene_id=scene_id,
         job_type=job_type,
         status=JobStatus.QUEUED.value,
-        payload=payload or {},
+        payload=body,
         estimated_cost_usd=estimated_cost_usd,
         max_attempts=max_attempts,
     )
@@ -81,9 +130,39 @@ def _run_inline(job_id: str) -> None:
         db.close()
 
 
+def claim_job(db: Session, job_id: str) -> Optional[GenerationJob]:
+    """Atomically take ownership of a queued job.
+
+    Without this a job can run twice at once — the queue dispatches it to a
+    worker while something else (the seeder, a retried request) executes it
+    inline — and two FFmpeg processes write the same output file, producing a
+    corrupt clip that still looks plausible. The claim is a conditional UPDATE,
+    so exactly one caller wins.
+    """
+    claimable = (JobStatus.QUEUED.value, JobStatus.RETRYING.value)
+    updated = (
+        db.query(GenerationJob)
+        .filter(GenerationJob.id == job_id, GenerationJob.status.in_(claimable))
+        .update(
+            {GenerationJob.status: JobStatus.RUNNING.value, GenerationJob.started_at: utcnow()},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    if not updated:
+        return None
+    db.expire_all()
+    return db.get(GenerationJob, job_id)
+
+
 def execute_job(db: Session, job_id: str) -> None:
     job = db.get(GenerationJob, job_id)
-    if not job or job.status in (JobStatus.COMPLETED.value, JobStatus.CANCELLED.value):
+    if not job or job.status in (
+        JobStatus.COMPLETED.value, JobStatus.CANCELLED.value, JobStatus.RUNNING.value
+    ):
+        return
+    job = claim_job(db, job_id)
+    if job is None:  # another worker got there first
         return
     handler = _HANDLERS.get(job.job_type)
     if handler is None:
@@ -92,8 +171,6 @@ def execute_job(db: Session, job_id: str) -> None:
         db.commit()
         return
 
-    job.status = JobStatus.RUNNING.value
-    job.started_at = utcnow()
     job.progress = 0.05
     db.commit()
 
@@ -136,3 +213,36 @@ def job_payload(job: GenerationJob) -> Dict[str, Any]:
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
     }
+
+
+def cancel_job(db: Session, job: GenerationJob) -> Dict[str, Any]:
+    """Cancel a job, and be honest about what cancellation actually means.
+
+    A queued job simply never starts. A job already running locally is marked
+    cancelled and its result discarded. A job that has been handed to an
+    external provider may already have incurred cost — we say so rather than
+    implying the charge was stopped.
+    """
+    if job.status in (JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value):
+        return {"ok": False, "status": job.status,
+                "message_en": "This job has already finished.",
+                "message_ar": "هاي المهمة خلصت من قبل."}
+
+    provider_side = bool((job.result or {}).get("provider_job_id"))
+    was_running = job.status == JobStatus.RUNNING.value
+    job.status = JobStatus.CANCELLED.value
+    job.progress_label = "cancelled"
+    job.finished_at = utcnow()
+    db.commit()
+    if provider_side:
+        message_en = ("Cancelled on our side. The provider job was already submitted, "
+                      "so any cost it has already incurred still stands.")
+        message_ar = ("انلغت من طرفنا. الطلب كان مرسل للمزود، فأي كلفة انصرفت تبقى محسوبة.")
+    elif was_running:
+        message_en = "Cancelled. The work in progress was discarded."
+        message_ar = "انلغت، والشغل اللي كان يشتغل انلغى."
+    else:
+        message_en = "Cancelled before it started. Nothing was spent."
+        message_ar = "انلغت قبل ما تبدي. ما انصرف شي."
+    return {"ok": True, "status": job.status, "provider_side": provider_side,
+            "message_en": message_en, "message_ar": message_ar}

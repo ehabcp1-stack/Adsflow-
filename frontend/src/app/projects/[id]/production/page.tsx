@@ -2,10 +2,12 @@
 
 import clsx from 'clsx';
 import { AlertTriangle, Check, CircleDollarSign, Lock, Play, ShieldCheck } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 import { AIDirector } from '@/components/AIDirector';
+import { CostPanel } from '@/components/CostPanel';
 import { ProjectFrame } from '@/components/ProjectFrame';
 import { MethodBadge } from '@/components/SceneDetail';
 import {
@@ -15,6 +17,7 @@ import {
   CardTitle,
   EmptyState,
   ErrorState,
+  Field,
   InlineError,
   LoadingBlock,
   Modal,
@@ -80,10 +83,20 @@ function ProductionView({ project, reloadProject }: { project: ProjectDetail; re
   const planApproved = data?.approvals?.production_plan?.status === 'approved';
 
   if (!plan) {
+    // A plan only exists once the storyboard does — point there instead of
+    // leaving a dead screen.
     return (
       <div className="space-y-4">
         {error ? <ErrorState error={error} onRetry={reload} /> : null}
-        <EmptyState title={t.production.empty} hint={t.storyboard.approve} />
+        <EmptyState
+          title={t.production.empty}
+          hint={t.storyboard.empty}
+          action={
+            <Link href={`/projects/${project.id}/storyboard`}>
+              <Button>{t.storyboard.title}</Button>
+            </Link>
+          }
+        />
       </div>
     );
   }
@@ -164,6 +177,9 @@ function ProductionView({ project, reloadProject }: { project: ProjectDetail; re
           </ol>
         </Card>
       </div>
+
+      {/* What has actually been spent, from the cost ledger. */}
+      <CostPanel projectId={project.id} sceneCount={plan.scene_count} />
 
       {/* Generation */}
       {status && status.jobs_total > 0 ? (
@@ -274,13 +290,16 @@ function ProductionView({ project, reloadProject }: { project: ProjectDetail; re
         <p className="mb-3 text-[13.5px] text-ink-muted">
           {t.production.total}: <span className="ltr-nums font-semibold text-ink">{money(plan.estimated_total_usd)}</span>
         </p>
-        <input
-          type="number"
-          step="0.5"
-          className="field ltr-nums"
-          value={newBudget}
-          onChange={(event) => setNewBudget(event.target.value)}
-        />
+        <Field label={t.costs.budget} hint={t.production.needsApproval}>
+          <input
+            type="number"
+            min="0"
+            step="0.5"
+            className="field ltr-nums"
+            value={newBudget}
+            onChange={(event) => setNewBudget(event.target.value)}
+          />
+        </Field>
         <InlineError error={raiseBudget.error} />
       </Modal>
     </div>

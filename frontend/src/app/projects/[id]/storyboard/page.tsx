@@ -7,7 +7,7 @@ import { useState } from 'react';
 
 import { AIDirector } from '@/components/AIDirector';
 import { ProjectFrame } from '@/components/ProjectFrame';
-import { MethodBadge, SceneDetail } from '@/components/SceneDetail';
+import { METHOD_COLOR, MethodBadge, SceneDetail } from '@/components/SceneDetail';
 import {
   Badge,
   Button,
@@ -22,7 +22,7 @@ import {
 import { useLocale } from '@/i18n/LocaleProvider';
 import { api, mediaUrl } from '@/lib/api';
 import { useApi, useMutation } from '@/lib/hooks';
-import type { ProjectDetail, Scene, Storyboard } from '@/lib/types';
+import type { DirectorNote, ProjectDetail, Scene, Storyboard } from '@/lib/types';
 
 export default function StoryboardPage() {
   return <ProjectFrame>{(project, reload) => <StoryboardView project={project} reloadProject={reload} />}</ProjectFrame>;
@@ -52,6 +52,22 @@ function StoryboardView({ project, reloadProject }: { project: ProjectDetail; re
     const fresh = await api.get<{ storyboard: Storyboard | null }>(`/projects/${project.id}/storyboard`);
     const updated = fresh.storyboard?.scenes.find((item) => item.id === scene.id) ?? null;
     setOpenScene(updated);
+    reload();
+    reloadProject();
+  });
+
+  /**
+   * Applies an AI Director recommendation. Only the actions the backend
+   * actually exposes are handled; anything else leaves the note advisory
+   * (and `AIDirector` then renders no button for it).
+   */
+  const applyNote = useMutation(async (note: DirectorNote) => {
+    const action = (note.action ?? {}) as { type?: string; scene_id?: string; scene_ids?: string[] };
+    const sceneIds = action.scene_ids ?? (action.scene_id ? [action.scene_id] : []);
+    if (action.type !== 'make_cheaper' && action.type !== 'downgrade_extra_ai_video') return;
+    for (const sceneId of sceneIds) {
+      await api.post(`/projects/${project.id}/scenes/${sceneId}/cheaper`);
+    }
     reload();
     reloadProject();
   });
@@ -104,7 +120,12 @@ function StoryboardView({ project, reloadProject }: { project: ProjectDetail; re
         </div>
       </div>
 
-      <AIDirector notes={storyboard.production_plan?.director_notes} />
+      <AIDirector
+        notes={storyboard.production_plan?.director_notes}
+        pending={applyNote.pending}
+        onAction={(note) => void applyNote.run(note)}
+      />
+      <InlineError error={applyNote.error} />
 
       {/* Dark graphite timeline workspace */}
       <div className="workspace p-4">
@@ -137,15 +158,26 @@ function StoryboardView({ project, reloadProject }: { project: ProjectDetail; re
               {scene.locked ? (
                 <Lock className="absolute end-1 top-1 h-3 w-3 text-emerald-400" />
               ) : null}
+              {/* Production method is what the legend below names. */}
+              <span
+                className="absolute inset-x-0 bottom-0 h-1"
+                style={{ background: METHOD_COLOR[scene.production_method] ?? '#667085' }}
+              />
             </button>
           ))}
         </div>
 
-        <div className="mt-3 flex flex-wrap gap-3 text-[11.5px] text-slate-400">
-          <span>■ original media</span>
-          <span>■ photo motion</span>
-          <span>■ AI image</span>
-          <span>■ AI video</span>
+        {/* Legend covers only the methods actually used in this storyboard. */}
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-[11.5px] text-slate-400">
+          {[...new Set(storyboard.scenes.map((scene) => scene.production_method))].map((method) => (
+            <span key={method} className="flex items-center gap-1.5">
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ background: METHOD_COLOR[method] ?? '#667085' }}
+              />
+              {method.replace(/_/g, ' ')}
+            </span>
+          ))}
         </div>
       </div>
 
@@ -240,6 +272,7 @@ function StoryboardView({ project, reloadProject }: { project: ProjectDetail; re
         onClose={() => setOpenScene(null)}
         pending={sceneAction.pending}
         error={sceneAction.error}
+        promptVersion={storyboard.version}
         onAction={(action, payload) => openScene && void sceneAction.run(openScene, action, payload)}
       />
     </div>

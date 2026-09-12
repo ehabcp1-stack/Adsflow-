@@ -4,11 +4,19 @@ Four responsibilities, one structured report:
     Brief Interpreter · Asset Analyzer · Creative Strategist · Production Recommender
 
 Runs fully on Mock Providers when no API keys exist.
+
+The Asset Analyzer used to score every asset with a seeded random number —
+consistent across runs, but not connected to the actual file. It now reads
+`app.services.assets` (real Pillow/FFmpeg measurement, see that module) and
+falls back to an honestly-labelled "not measured" result only when an asset
+has no locally-reachable file at all (e.g. one registered by remote URL
+through `/assets/register`, which never had bytes to inspect).
 """
 from __future__ import annotations
 
-import hashlib
-import random
+import logging
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -17,7 +25,11 @@ from app.core.enums import ProductionMode
 from app.models import Asset, Project, ProjectAnalysis
 from app.providers.pricing import estimate_scene_cost, estimate_voice_cost
 from app.providers.registry import get_llm
+from app.services import assets as assets_service
 from app.services.director import director_note
+from app.services.storage import get_storage
+
+log = logging.getLogger("adflow.services.analysis")
 
 ANALYSIS_STEPS: List[Dict[str, str]] = [
     {"key": "brief", "label_en": "Understanding brief", "label_ar": "نفهم الطلب"},
@@ -30,72 +42,163 @@ ANALYSIS_STEPS: List[Dict[str, str]] = [
 
 IMAGE_CATEGORIES = ["exterior", "interior", "amenity", "location", "detail", "lifestyle", "floorplan"]
 
-
-def _rng(seed: str) -> random.Random:
-    return random.Random(int(hashlib.md5(seed.encode()).hexdigest()[:8], 16))
+#: Minimum total usable footage to count as "good footage" for mode selection
+#: — enough to carry a reel opening on its own. Below this, own photos plus
+#: motion is judged the stronger (and cheaper) source.
+_GOOD_FOOTAGE_SEC = 6.0
 
 
 # --------------------------------------------------------------------------
 # Asset Analyzer
 # --------------------------------------------------------------------------
-def analyze_image(asset: Asset) -> Dict[str, Any]:
-    rng = _rng(asset.id)
-    quality = round(rng.uniform(62, 97), 1)
-    hero = round(min(99.0, quality + rng.uniform(-12, 8)), 1)
-    orientation = asset.orientation or ("portrait" if (asset.height or 0) > (asset.width or 1) else "landscape")
-    category = asset.category or rng.choice(IMAGE_CATEGORIES)
+def _local_path(asset: Asset) -> Optional[str]:
+    if not asset.storage_key:
+        return None
+    try:
+        path = get_storage().local_path(asset.storage_key)
+    except Exception:  # noqa: BLE001 - a storage backend quirk must not break analysis
+        return None
+    return path if path and Path(path).exists() else None
+
+
+def _unmeasured_image_result(asset: Asset, *, error: Optional[str] = None) -> Dict[str, Any]:
+    """Honest fallback for an Asset row with no reachable local file.
+
+    Used for assets registered by remote URL (`/assets/register`) — there is
+    no file here to measure, so this returns a clearly-labelled placeholder
+    instead of fabricating pixel statistics.
+    """
+    orientation = asset.orientation or "unknown"
     return {
-        "quality_score": quality,
-        "category": category,
-        "hero_potential": hero,
-        "usable": quality >= 60,
-        "suggested_use": {
-            "exterior": "لقطة تعريفية بالمشروع",
-            "interior": "لقطة إحساس بالمساحة الداخلية",
-            "amenity": "إثبات خدمات ومرافق",
-            "location": "توضيح الموقع والقرب",
-            "detail": "تفصيل يرفع الإحساس بالجودة",
-            "lifestyle": "لحظة إنسانية تقرّب الجمهور",
-            "floorplan": "معلومة تقنية بموشن غرافيك",
-        }.get(category, "مشهد داعم"),
+        "measured": False,
+        "error": error,
+        "quality_score": 0.0,
+        "category": asset.category or "unknown",
+        "hero_potential": 0.0,
+        "usable": False,
+        "suggested_use": "ما أكو ملف محلي نحلله — راجع الرابط",
         "orientation": orientation,
-        "resolution": f"{asset.width or 1920}x{asset.height or 1080}",
+        "resolution": f"{asset.width or 0}x{asset.height or 0}",
         "needs_reframe": orientation != "portrait",
-        "notes_ar": "الصورة تصلح للحركة (Ken Burns) بدون توليد" if quality >= 75 else "جودة متوسطة — تصلح كمشهد ثانوي",
+        "notes_ar": "صار خطأ أثناء التحليل." if error else "هذا رابط خارجي — ما نقدر نقيس الصورة فعلياً.",
+    }
+
+
+def analyze_image(asset: Asset) -> Dict[str, Any]:
+    """Real Pillow measurement of the asset's stored file, reshaped to the
+    dict shape existing callers (`/assets/register`, this module) expect.
+
+    See `app.services.assets.analyze_image` for the actual measurement and
+    the full-detail result (kept here under `measured_detail`).
+    """
+    path = _local_path(asset)
+    if not path:
+        return _unmeasured_image_result(asset)
+    try:
+        measured = assets_service.analyze_image(path)
+    except Exception as exc:  # noqa: BLE001 - a bad file degrades the result, never crashes analysis
+        log.warning("image measurement failed for asset %s: %s", asset.id, exc)
+        return _unmeasured_image_result(asset, error=str(exc))
+
+    quality01 = measured.get("quality", 0.0)
+    hero01 = measured.get("hero_potential", 0.0)
+    orientation = measured.get("orientation") or asset.orientation or "unknown"
+    width, height = measured.get("width"), measured.get("height")
+    return {
+        "measured": bool(measured.get("measured", True)),
+        "quality_score": round(quality01 * 100, 1),
+        "category": measured.get("visual_category_guess", asset.category),
+        "hero_potential": round(hero01 * 100, 1),
+        "usable": bool(measured.get("measured", True)) and quality01 >= 0.45,
+        "suggested_use": measured.get("recommended_scene_use"),
+        "orientation": orientation,
+        "resolution": f"{width or asset.width or 0}x{height or asset.height or 0}",
+        "needs_reframe": orientation != "portrait",
+        "notes_ar": measured.get("exposure_ar", ""),
+        "measured_detail": measured,
+    }
+
+
+def _unmeasured_video_result(asset: Asset, *, error: Optional[str] = None) -> Dict[str, Any]:
+    orientation = asset.orientation or "landscape"
+    return {
+        "measured": False,
+        "error": error,
+        "duration_sec": asset.duration_sec or 0.0,
+        "usable_segments": [],
+        "strong_segments": [],
+        "weak_segments": [],
+        "hook_potential": 0.0,
+        "orientation": orientation,
+        "quality": 0.0,
+        "audio_recommendation": "غير متوفر بدون ملف محلي",
+        "reframing_recommendation": "غير متوفر بدون ملف محلي",
+        "usable": False,
     }
 
 
 def analyze_video(asset: Asset) -> Dict[str, Any]:
-    rng = _rng(asset.id + "v")
-    duration = asset.duration_sec or round(rng.uniform(8, 45), 1)
-    segment_count = max(2, int(duration // 6))
-    segments: List[Dict[str, Any]] = []
-    for i in range(segment_count):
-        start = round(i * duration / segment_count, 2)
-        end = round((i + 1) * duration / segment_count, 2)
-        score = round(rng.uniform(55, 96), 1)
-        segments.append(
-            {
-                "start": start,
-                "end": end,
-                "score": score,
-                "strength": "strong" if score >= 82 else ("weak" if score < 68 else "usable"),
-                "note_ar": "لقطة ثابتة وواضحة" if score >= 82 else "فيها اهتزاز أو تكرار",
-            }
-        )
-    strong = [s for s in segments if s["strength"] == "strong"]
-    orientation = asset.orientation or "landscape"
+    """Real shot-detection + per-segment scoring of the asset's stored file.
+
+    See `app.services.assets.analyze_video_asset` (wraps `app.media.shots`)
+    for the actual measurement; this reshapes it to the dict shape existing
+    callers expect and keeps the full-detail result under `measured_detail`.
+    """
+    path = _local_path(asset)
+    if not path:
+        return _unmeasured_video_result(asset)
+    try:
+        with tempfile.TemporaryDirectory(prefix="adflow-analysis-") as tmp:
+            measured = assets_service.analyze_video_asset(path, thumb_dir=tmp)
+    except Exception as exc:  # noqa: BLE001 - a bad file degrades the result, never crashes analysis
+        log.warning("video measurement failed for asset %s: %s", asset.id, exc)
+        return _unmeasured_video_result(asset, error=str(exc))
+
+    if not measured.get("ok"):
+        return _unmeasured_video_result(asset, error=measured.get("error"))
+
+    segments_old = [
+        {
+            "start": s["start"], "end": s["end"],
+            "score": round(s["quality"] * 100, 1),
+            "strength": s["strength"],
+            "note_ar": s["reason_ar"],
+        }
+        for s in measured["segments"]
+    ]
+    strong = [s for s in segments_old if s["strength"] == "strong"]
+    weak = [s for s in segments_old if s["strength"] == "weak"]
+    orientation = measured.get("orientation") or asset.orientation or "landscape"
+    reframe_votes = [s.get("reframe_suitability") for s in measured["segments"]]
+    reframing_recommendation = (
+        "جاهز عمودي" if orientation == "portrait"
+        else ("قص ذكي إلى ٩:١٦" if reframe_votes.count("crop") >= reframe_votes.count("blur_pad")
+              else "تأطير بخلفية ضبابية يحافظ على المشهد كامل")
+    )
+    audio_important_count = sum(1 for s in measured["segments"] if s.get("audio_important"))
+    audio_recommendation = (
+        "الصوت الأصلي مهم بأكثر من مقطع — يفضل نبقيه أو نمزجه مع الموسيقى"
+        if audio_important_count
+        else "استبدال الصوت الأصلي بتعليق صوتي عراقي + موسيقى"
+    )
+
     return {
-        "duration_sec": duration,
-        "usable_segments": [s for s in segments if s["strength"] != "weak"],
+        "measured": True,
+        "duration_sec": measured["duration_sec"],
+        "usable_segments": [s for s in segments_old if s["strength"] != "weak"],
         "strong_segments": strong,
-        "weak_segments": [s for s in segments if s["strength"] == "weak"],
-        "hook_potential": round(max([s["score"] for s in segments] + [0]), 1),
+        "weak_segments": weak,
+        "hook_potential": round(measured["hook_potential"] * 100, 1),
         "orientation": orientation,
-        "quality": round(sum(s["score"] for s in segments) / len(segments), 1),
-        "audio_recommendation": "استبدال الصوت الأصلي بتعليق صوتي عراقي + موسيقى",
-        "reframing_recommendation": "قص ذكي إلى ٩:١٦ مع تتبّع مركز الاهتمام" if orientation != "portrait" else "جاهز عمودي",
-        "usable": len(strong) > 0,
+        "quality": round(measured["quality"] * 100, 1),
+        "audio_recommendation": audio_recommendation,
+        "reframing_recommendation": reframing_recommendation,
+        "usable": measured["usable"],
+        "usable_count": measured.get("usable_count", 0),
+        "usable_duration_sec": measured.get("usable_duration_sec", 0.0),
+        "best_opening_index": measured.get("best_opening_index"),
+        "remix_plan_hint": measured.get("remix_plan_hint"),
+        "measured_detail": measured,
     }
 
 
@@ -122,22 +225,69 @@ def analyze_assets(db: Session, project: Project) -> Dict[str, Any]:
         per_asset.append({"asset_id": asset.id, "kind": "video", **result})
 
     usable_images = [a for a in images if a.usable]
+    usable_videos = [a for a in videos if a.usable]
     diversity = len({a.category for a in usable_images if a.category})
     hero_candidates = sorted(usable_images, key=lambda a: -(a.hero_potential or 0))[:3]
+
+    # Real counts the mode/cost decisions are driven by — not raw presence.
+    usable_video_segment_count = sum(int((a.analysis or {}).get("usable_count", 0)) for a in usable_videos)
+    usable_video_duration_sec = round(
+        sum(float((a.analysis or {}).get("usable_duration_sec", 0.0)) for a in usable_videos), 2
+    )
+    hook_pool = [
+        {"asset_id": a.id, "kind": "image", "score": a.hero_potential or 0.0} for a in usable_images
+    ] + [
+        {"asset_id": a.id, "kind": "video", "score": (a.analysis or {}).get("hook_potential") or 0.0}
+        for a in usable_videos
+    ]
+    best_hook = max(hook_pool, key=lambda h: h["score"], default=None)
+    orientation_mix: Dict[str, int] = {}
+    for a in usable_images + usable_videos:
+        key = a.orientation or "unknown"
+        orientation_mix[key] = orientation_mix.get(key, 0) + 1
 
     return {
         "image_count": len(images),
         "video_count": len(videos),
         "usable_image_count": len(usable_images),
-        "usable_video_count": len([a for a in videos if a.usable]),
+        "usable_video_count": len(usable_videos),
+        "usable_video_segment_count": usable_video_segment_count,
+        "usable_video_duration_sec": usable_video_duration_sec,
         "average_quality": round(
             sum(a.quality_score or 0 for a in assets) / max(len(assets), 1), 1
         ),
         "asset_diversity": diversity,
         "hero_candidates": [{"asset_id": a.id, "score": a.hero_potential} for a in hero_candidates],
+        "best_hook": best_hook,
+        "orientation_mix": orientation_mix,
         "video_usability": "high" if any(a.usable for a in videos) else ("none" if not videos else "low"),
         "per_asset": per_asset,
     }
+
+
+def recommend_production_mode(assets_summary: Dict[str, Any]) -> str:
+    """Pick a production mode from real, measured asset facts — never a guess.
+
+    Mirrors the product's cost spine (CLAUDE.md §4 — Original Video → Original
+    Photo → Photo Motion → AI Image → AI Video): footage the customer already
+    owns beats anything generated, so a project with enough *usable* video
+    duration always wins `video_remix_reel`; a photo-only project with usable
+    stills gets the (still premium) `photo_voice_reel`; a project with both
+    gets `hybrid_reel`; a project with nothing usable falls back to
+    `full_ai_reel`, which is the one mode that costs real money regardless of
+    what the customer already has.
+    """
+    usable_images = assets_summary.get("usable_image_count", 0)
+    usable_video_sec = assets_summary.get("usable_video_duration_sec", 0.0)
+    has_good_video = usable_video_sec >= _GOOD_FOOTAGE_SEC
+    has_photos = usable_images > 0
+    if has_good_video and has_photos:
+        return ProductionMode.HYBRID_REEL.value
+    if has_good_video:
+        return ProductionMode.VIDEO_REMIX_REEL.value
+    if has_photos:
+        return ProductionMode.PHOTO_VOICE_REEL.value
+    return ProductionMode.FULL_AI_REEL.value
 
 
 # --------------------------------------------------------------------------
@@ -206,7 +356,11 @@ def run_analysis(db: Session, project: Project, *, version: Optional[int] = None
         task="creative_strategy", context={"brief": brief, "assets_summary": assets_summary}
     ).data
 
-    mode = strategy.get("recommended_mode", ProductionMode.HYBRID_REEL.value)
+    # The mode decision is driven by real, measured counts (see
+    # recommend_production_mode) rather than the LLM/mock provider's opinion
+    # — `strategy["recommended_mode"]` is kept in `creative_strategy` for
+    # transparency but never used to decide what gets produced.
+    mode = recommend_production_mode(assets_summary)
     if project.production_mode != ProductionMode.AUTO_SMART.value:
         mode = project.production_mode
     cost_plan = estimate_project_cost(project, assets_summary, mode)
@@ -256,12 +410,27 @@ def run_analysis(db: Session, project: Project, *, version: Optional[int] = None
                 impact="high",
             )
         )
-    if not total_assets:
+    if mode == ProductionMode.FULL_AI_REEL.value:
+        # Real counts, not just an empty library, drive this: an asset that
+        # exists but failed analysis (corrupt, unreadable) counts the same as
+        # nothing uploaded — neither can be produced from for free.
         notes.append(
             director_note(
-                key="no_assets",
-                en="No media uploaded — I will plan a Full AI Reel, which costs more. Uploading 4-6 photos cuts it sharply.",
-                ar="ما أكو مواد مرفوعة — راح أخطط لريل AI كامل وهذا أغلى. لو ترفع ٤–٦ صور تنزل الكلفة كثير.",
+                key="no_usable_assets",
+                en=(
+                    f"Nothing usable to build from yet — this plans as a Full AI Reel, "
+                    f"estimated ${cost_plan['estimated_total_usd']:.2f}. Uploading 4-6 usable "
+                    f"photos would cut that sharply."
+                    if total_assets
+                    else "No media uploaded — I will plan a Full AI Reel, which costs more. "
+                    "Uploading 4-6 photos cuts it sharply."
+                ),
+                ar=(
+                    f"ما أكو مواد صالحة نبني عليها — راح أخطط لريل AI كامل، الكلفة التقديرية "
+                    f"${cost_plan['estimated_total_usd']:.2f}. لو ترفع ٤–٦ صور صالحة تنزل الكلفة كثير."
+                    if total_assets
+                    else "ما أكو مواد مرفوعة — راح أخطط لريل AI كامل وهذا أغلى. لو ترفع ٤–٦ صور تنزل الكلفة كثير."
+                ),
                 impact="high",
             )
         )

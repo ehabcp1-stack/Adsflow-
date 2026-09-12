@@ -8,7 +8,8 @@ import { createContext, useContext, useState } from 'react';
 
 import { useLocale } from '@/i18n/LocaleProvider';
 import { DEMO_MODE } from '@/lib/api';
-import { useLocalToggle } from '@/lib/hooks';
+import { useApi, useLocalToggle } from '@/lib/hooks';
+import type { SystemHealth } from '@/lib/types';
 
 import { Badge, Toggle } from './ui';
 
@@ -74,6 +75,27 @@ export function LanguageToggle() {
         </button>
       ))}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------- Runtime */
+/**
+ * States the real provider runtime instead of claiming one. Reads
+ * `/system/health`; renders nothing until it answers, so the shell never
+ * asserts "mock" (or "real") on a guess. Clicking it opens Settings, where
+ * the full provider list lives — so this is a control, not a label.
+ */
+function RuntimeBadge() {
+  const { t } = useLocale();
+  const { data } = useApi<SystemHealth>('/system/health');
+  if (!data) return null;
+  const mock = data.runtime_mode === 'mock';
+  return (
+    <Link href="/settings" className="block">
+      <Badge tone={mock ? 'accent' : 'ok'} className="w-full justify-center">
+        {mock ? t.settings.mockMode : t.settings.realProvider} · {t.settings.providers}
+      </Badge>
+    </Link>
   );
 }
 
@@ -149,7 +171,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span className="text-[12px] text-ink-faint">{t.common.language}</span>
                 <LanguageToggle />
               </div>
-              <Badge tone="accent">{t.common.mock} · Mock providers</Badge>
+              <RuntimeBadge />
             </div>
           </aside>
 

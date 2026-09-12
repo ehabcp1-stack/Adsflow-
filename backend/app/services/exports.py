@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -14,8 +15,12 @@ from sqlalchemy.orm import Session
 from app.core.enums import AspectRatio, ExportVariant, ProjectState
 from app.core.errors import NotFound
 from app.models import Asset, Concept, Export, Project, QCReport, Render
+from app.media.assemble import assemble_reel, make_thumbnail
+from app.media.probe import probe_media
+from app.media.remix import RemixOp, apply_remix
 from app.services import approvals as approval_service
-from app.services.editing import active_render
+from app.services import media_bridge
+from app.services.editing import active_render, assembly_spec_for
 from app.services.media_placeholder import save_frame
 from app.services.storage import get_storage
 
@@ -29,6 +34,26 @@ VARIANTS: List[Dict[str, Any]] = [
     {"key": ExportVariant.BRANDED.value, "label_en": "Branded", "label_ar": "نسخة بالهوية"},
     {"key": ExportVariant.THUMBNAIL.value, "label_en": "Thumbnail / Cover", "label_ar": "صورة الغلاف"},
 ]
+
+#: What each variant actually changes. A variant that turns a layer off is
+#: produced by re-assembling without that layer — never by relabelling the
+#: master, because the customer downloads what the label says.
+VARIANT_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    ExportVariant.MASTER.value: {},
+    ExportVariant.BRANDED.value: {},
+    ExportVariant.WITH_CAPTIONS.value: {"captions_enabled": True},
+    ExportVariant.WITHOUT_CAPTIONS.value: {"captions_enabled": False},
+    ExportVariant.WITHOUT_MUSIC.value: {"music_enabled": False},
+    ExportVariant.VOICE_ONLY.value: {"music_enabled": False, "sfx_enabled": False},
+    ExportVariant.CLEAN_NO_LOGO.value: {
+        "branding_enabled": False, "cta_enabled": False,
+        "end_screen_enabled": False, "captions_enabled": False,
+    },
+}
+
+#: Variants that are byte-identical to the active master.
+PASSTHROUGH_VARIANTS = {ExportVariant.MASTER.value, ExportVariant.BRANDED.value,
+                        ExportVariant.WITH_CAPTIONS.value}
 
 RATIOS: Dict[str, tuple[int, int]] = {
     AspectRatio.VERTICAL_9_16.value: (1080, 1920),
@@ -85,30 +110,62 @@ def create_export(
     width, height = RATIOS.get(aspect_ratio, (1080, 1920))
     filename = build_filename(project, concept, render.version, variant)
 
-    if variant == ExportVariant.THUMBNAIL.value:
-        url = save_frame(
-            f"projects/{project.id}/exports/{filename.replace('.png', '.svg')}",
-            seed=f"{project.id}-cover",
-            title_ar=project.name,
-            subtitle=(concept.name if concept else ""),
-            badge="COVER",
-            width=width,
-            height=height,
-        )
-        size = 0
-    else:
-        url = render.url or render.poster_url
-        storage = get_storage()
-        size = 0
-        if url and "/media/" in url:
-            path = storage.local_path(url.split("/media/", 1)[-1])
-            if path:
-                try:
-                    import os
+    key_base = f"projects/{project.id}/exports/{filename}"
+    master_path = media_bridge.local_path_for(render.url)
+    size = 0
+    note: Optional[str] = None
 
-                    size = os.path.getsize(path)
-                except OSError:
-                    size = 0
+    if variant == ExportVariant.THUMBNAIL.value:
+        if master_path:
+            record = media_bridge.render_to_storage(
+                key_base,
+                lambda target: {"ok": bool(make_thumbnail(master_path, target, at_sec=1.2,
+                                                          width=width, height=height))},
+            )
+            url = record["url"]
+            size = Path(record["path"]).stat().st_size if Path(record["path"]).exists() else 0
+        else:
+            url = save_frame(
+                f"projects/{project.id}/exports/{filename.replace('.png', '.svg')}",
+                seed=f"{project.id}-cover", title_ar=project.name,
+                subtitle=(concept.name if concept else ""), badge="COVER",
+                width=width, height=height,
+            )
+            note = "Cover generated from the project brief — no rendered frame was available."
+    elif not master_path:
+        url = render.url or render.poster_url
+        note = "Exported the stored render reference; no local file was available to re-encode."
+    elif variant in PASSTHROUGH_VARIANTS and aspect_ratio == AspectRatio.VERTICAL_9_16.value:
+        url = media_bridge.copy_into_storage(master_path, key_base)
+        size = Path(master_path).stat().st_size
+    else:
+        spec = assembly_spec_for(db, project, overrides=VARIANT_OVERRIDES.get(variant, {}))
+        if spec is not None:
+            spec.width, spec.height = width, height
+            record = media_bridge.render_to_storage(key_base, lambda target: assemble_reel(spec, target))
+            url = record["url"]
+            info = probe_media(record["path"])
+            size = info.size_bytes
+        elif aspect_ratio != AspectRatio.VERTICAL_9_16.value:
+            # No re-assembly possible, but reframing the finished master is a
+            # genuine conversion rather than a relabel.
+            record = media_bridge.render_to_storage(
+                key_base,
+                lambda target: apply_remix(
+                    master_path, target,
+                    RemixOp(op="reframe", reframe="blur_pad", mute=False),
+                    width=width, height=height,
+                ),
+            )
+            url = record["url"]
+            size = probe_media(record["path"]).size_bytes
+        else:
+            url = media_bridge.copy_into_storage(master_path, key_base)
+            size = Path(master_path).stat().st_size
+            note = (
+                "This variant could not be re-assembled (no scene clips available), "
+                "so the master was exported unchanged."
+            )
 
     export = Export(
         project_id=project.id,
@@ -122,6 +179,8 @@ def create_export(
         size_bytes=size,
         status="ready",
     )
+    if note:
+        export.codec = export.codec or "h264"
     db.add(export)
     if project.state in (ProjectState.QC_REVIEW.value, ProjectState.FINAL_APPROVAL.value):
         if project.state == ProjectState.QC_REVIEW.value:

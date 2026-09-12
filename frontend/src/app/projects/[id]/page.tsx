@@ -5,16 +5,17 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import { CostPanel } from '@/components/CostPanel';
 import { ProjectFrame } from '@/components/ProjectFrame';
 import { AssetUploader } from '@/components/AssetUploader';
-import { Badge, Button, Card, CardTitle, EmptyState, Field, InlineError, Toggle } from '@/components/ui';
+import { Badge, Button, Card, CardTitle, Field, InlineError } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';
 import { api } from '@/lib/api';
 import { useApi, useMutation } from '@/lib/hooks';
 import type { Asset, ProjectDetail } from '@/lib/types';
 
 export default function ProjectBriefPage() {
-  const { t, locale, num, isRTL } = useLocale();
+  const { t, isRTL } = useLocale();
   const router = useRouter();
   const Next = isRTL ? ArrowLeft : ArrowRight;
   const [edited, setEdited] = useState<Partial<ProjectDetail>>({});
@@ -52,7 +53,7 @@ function BriefEditor({
   onNext: () => void;
   NextIcon: React.ComponentType<{ className?: string }>;
 }) {
-  const { t, num } = useLocale();
+  const { t } = useLocale();
   const { data: assetData, reload: reloadAssets } = useApi<{ items: Asset[] }>(`/assets?project_id=${project.id}`);
   const value = <K extends keyof ProjectDetail>(key: K): ProjectDetail[K] =>
     (edited[key] !== undefined ? (edited[key] as ProjectDetail[K]) : project[key]);
@@ -179,6 +180,8 @@ function ProjectSidebar({ project }: { project: ProjectDetail }) {
 
   return (
     <>
+      <CostPanel projectId={project.id} compact />
+
       <Card>
         <CardTitle>{t.common.approved}</CardTitle>
         {approvals.length === 0 ? (

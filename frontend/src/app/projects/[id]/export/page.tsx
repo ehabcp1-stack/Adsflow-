@@ -45,8 +45,16 @@ function ExportView({ project, reloadProject }: { project: ProjectDetail; reload
     reloadProject();
   });
 
-  const duplicate = useMutation(async () => {
-    const clone = await api.post<ProjectDetail>(`/projects/${project.id}/duplicate?new_version=true`);
+  /**
+   * Two distinct actions on the same endpoint:
+   *   newVersion=true  → "new reel from this project" (a fresh cut, named as a
+   *                      new version of the same campaign)
+   *   newVersion=false → a plain duplicate to branch from
+   */
+  const duplicate = useMutation(async (newVersion: boolean) => {
+    const clone = await api.post<ProjectDetail>(
+      `/projects/${project.id}/duplicate${newVersion ? '?new_version=true' : ''}`,
+    );
     router.push(`/projects/${clone.id}`);
   });
 
@@ -75,14 +83,18 @@ function ExportView({ project, reloadProject }: { project: ProjectDetail; reload
             <div className="overflow-hidden rounded-xl border border-line bg-graphite-900">
               {data.render?.url && data.render.url.endsWith('.mp4') ? (
                 <video src={mediaUrl(data.render.url)} poster={mediaUrl(data.render.poster_url)} controls className="aspect-[9/16] w-full object-cover" />
+              ) : data.render?.poster_url ? (
+                <img src={mediaUrl(data.render.poster_url)} alt="" className="aspect-[9/16] w-full object-cover" />
               ) : (
-                <img src={mediaUrl(data.render?.poster_url)} alt="" className="aspect-[9/16] w-full object-cover" />
+                <div className="flex aspect-[9/16] w-full items-center justify-center text-slate-600">
+                  <FileVideo className="h-7 w-7" />
+                </div>
               )}
             </div>
 
             <div>
-              <p className="text-[13px] text-ink-muted">
-                1080 × 1920 · 9:16 · MP4 · H.264
+              <p className="ltr-nums text-[13px] text-ink-muted">
+                {data.render ? `${data.render.width} × ${data.render.height}` : '1080 × 1920'} · 9:16 · MP4 · H.264
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {data.variants.map((variant) => (
@@ -91,12 +103,18 @@ function ExportView({ project, reloadProject }: { project: ProjectDetail; reload
                     size="sm"
                     variant={variant.key === 'master' ? 'primary' : 'secondary'}
                     loading={createExport.pending}
+                    /* Nothing to export until the reel has been assembled. */
+                    disabled={!data.render}
+                    title={!data.render ? t.edit.empty : undefined}
                     onClick={() => void createExport.run(variant.key)}
                   >
                     {locale === 'ar' ? variant.label_ar : variant.label_en}
                   </Button>
                 ))}
               </div>
+              {!data.render ? (
+                <p className="mt-2 text-[12.5px] text-ink-muted">{t.edit.empty}</p>
+              ) : null}
 
               <InlineError error={createExport.error} />
               {blocked ? (
@@ -161,12 +179,27 @@ function ExportView({ project, reloadProject }: { project: ProjectDetail; reload
           </ul>
 
           <div className="mt-4 space-y-2">
-            <Button full variant="secondary" size="sm" icon={<Sparkles className="h-3.5 w-3.5" />} loading={duplicate.pending} onClick={() => void duplicate.run()}>
+            <Button
+              full
+              variant="secondary"
+              size="sm"
+              icon={<Sparkles className="h-3.5 w-3.5" />}
+              loading={duplicate.pending}
+              onClick={() => void duplicate.run(true)}
+            >
               {t.export.newReelFrom}
             </Button>
-            <Button full variant="ghost" size="sm" icon={<Copy className="h-3.5 w-3.5" />} loading={duplicate.pending} onClick={() => void duplicate.run()}>
+            <Button
+              full
+              variant="ghost"
+              size="sm"
+              icon={<Copy className="h-3.5 w-3.5" />}
+              loading={duplicate.pending}
+              onClick={() => void duplicate.run(false)}
+            >
               {t.export.duplicate}
             </Button>
+            <InlineError error={duplicate.error} />
             <Link href="/projects" className="block">
               <Button full variant="ghost" size="sm" icon={<Package className="h-3.5 w-3.5" />}>
                 {t.nav.projects}

@@ -15,7 +15,12 @@ from sqlalchemy.orm import Session
 from app.core.enums import EditingStyle, JobType, ProjectState
 from app.core.errors import NotFound
 from app.models import BrandKit, GenerationJob, Project, Render, Scene, ScriptVersion, Storyboard
+from app.media.assemble import AssemblySpec, assemble_reel, make_thumbnail
+from app.media.captions import CaptionStyle, style_for_template
+from app.media.ffmpeg import render_enabled
+from app.media.overlays import BrandLayer
 from app.services import approvals as approval_service
+from app.services import media_bridge
 from app.services.media_placeholder import concat_clips, save_clip, save_frame
 from app.services.storage import get_storage
 from app.services.storyboards import active_storyboard
@@ -278,54 +283,208 @@ def build_timeline(db: Session, project: Project, storyboard: Storyboard, script
     return tracks
 
 
+def _brand_layer(db: Session, project: Project) -> BrandLayer:
+    """Translate the project's Brand Kit into what the renderer needs.
+
+    The customer's brand is rendered — never AdFlow AI's or TADAFQ's.
+    """
+    brand = db.get(BrandKit, project.brand_kit_id) if project.brand_kit_id else None
+    template = (brand.end_screen_template if brand else {}) or {}
+    cta_template = (brand.cta_template if brand else {}) or {}
+    settings_ = {**DEFAULT_EDIT_SETTINGS, **(project.edit_settings or {})}
+    return BrandLayer(
+        name=(brand.name_ar or brand.name) if brand else project.name,
+        logo_path=media_bridge.local_path_for(brand.logo_url) if brand and brand.logo_url else None,
+        primary_color=brand.primary_color if brand else "#0F172A",
+        secondary_color=brand.secondary_color if brand else "#2563EB",
+        accent_color=brand.accent_color if brand else "#1D4ED8",
+        font_arabic=brand.font_arabic if brand else None,
+        font_latin=brand.font_latin if brand else None,
+        phone=brand.phone if brand else None,
+        website=brand.website if brand else None,
+        social_handle=(brand.social_handles or {}).get("instagram") if brand else None,
+        cta_text=project.cta or cta_template.get("text", ""),
+        tagline=template.get("tagline", "") or (brand.name_ar if brand else ""),
+        end_screen_template=template,
+        logo_position=settings_.get("logo_position", "top_left"),
+    )
+
+
+def _assembly_captions(script: Optional[ScriptVersion]) -> List[Dict[str, Any]]:
+    """One caption per spoken line, wrapped by the renderer in real pixels.
+
+    The on-screen wording may deliberately differ from the spoken line — the
+    dialect engine shortens spoken filler for the screen.
+    """
+    captions: List[Dict[str, Any]] = []
+    for line in (script.lines if script else []) or []:
+        text = (line.get("on_screen_text") or line.get("voice_line") or "").strip()
+        if not text:
+            continue
+        captions.append({
+            "text": text,
+            "start": float(line.get("start", 0.0) or 0.0),
+            "end": float(line.get("end", 0.0) or 0.0),
+            "highlight_word": line.get("highlight_word"),
+        })
+    return captions
+
+
+def _job_media(db: Session, project: Project, job_type: str) -> Optional[str]:
+    job = (
+        db.query(GenerationJob)
+        .filter(GenerationJob.project_id == project.id, GenerationJob.job_type == job_type)
+        .order_by(GenerationJob.created_at.desc())
+        .first()
+    )
+    url = (job.result or {}).get("url") if job else None
+    return media_bridge.local_path_for(url)
+
+
+def _scene_clip_paths(db: Session, storyboard: Storyboard) -> List[str]:
+    paths: List[str] = []
+    for scene in sorted(storyboard.scenes, key=lambda s: s.scene_number):
+        local = media_bridge.local_path_for(scene.output_url)
+        if local and local.lower().endswith((".mp4", ".mov", ".m4v")):
+            paths.append(local)
+    return paths
+
+
+def assembly_spec_for(
+    db: Session,
+    project: Project,
+    *,
+    overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[AssemblySpec]:
+    """Build the renderer spec for this project, with optional overrides.
+
+    Export variants ("without captions", "clean, no logo", ...) are produced by
+    re-assembling with the relevant layer switched off rather than by faking a
+    file, so what the customer downloads is genuinely that version.
+    Returns None when there is nothing real to assemble.
+    """
+    storyboard = active_storyboard(db, project)
+    if not storyboard:
+        return None
+    clip_paths = _scene_clip_paths(db, storyboard)
+    if not clip_paths or not render_enabled():
+        return None
+    script = db.get(ScriptVersion, storyboard.script_version_id) if storyboard.script_version_id else None
+    settings_ = {**DEFAULT_EDIT_SETTINGS, **(project.edit_settings or {}), **(overrides or {})}
+    brand = _brand_layer(db, project)
+    caption_style = style_for_template(
+        settings_.get("caption_template", "bold_bar"),
+        font_family=brand.font_arabic,
+        latin_font_family=brand.font_latin,
+        accent_color=brand.secondary_color,
+    )
+    return AssemblySpec(
+        scene_clips=clip_paths,
+        captions=_assembly_captions(script),
+        caption_style=caption_style,
+        captions_enabled=bool(settings_.get("captions_enabled", True)),
+        brand=brand,
+        branding_enabled=bool(settings_.get("branding_enabled", True)),
+        cta_enabled=bool(settings_.get("cta_enabled", True)),
+        cta_text=project.cta or "",
+        end_screen_enabled=bool(settings_.get("end_screen_enabled", True)),
+        platform=project.platform,
+        voice_path=_job_media(db, project, JobType.VOICE_GENERATION.value)
+        if (project.voice_over_enabled and settings_.get("voice_enabled", True)) else None,
+        music_path=_job_media(db, project, JobType.MUSIC_GENERATION.value)
+        if settings_.get("music_enabled", True) else None,
+        voice_volume=float(settings_.get("voice_volume", 1.0)),
+        music_volume=float(settings_.get("music_volume", 0.22)),
+        duck_music_under_voice=bool(settings_.get("duck_music_under_voice", True)),
+    )
+
+
 def render_project(db: Session, project: Project, *, user_id: Optional[str] = None) -> Render:
+    """Assemble the finished reel.
+
+    Where real scene clips exist this produces an actual 1080x1920 MP4 with
+    burnt-in Arabic captions, the brand layer, the CTA, an end screen and a
+    mixed, ducked, loudness-normalised audio bed. Where they do not (mock run
+    with no source media) it falls back to the deterministic placeholder reel
+    and says so on the Render row, so the UI never implies more than happened.
+    """
     storyboard = active_storyboard(db, project)
     if not storyboard:
         raise NotFound("Nothing to edit yet.", "ما أكو شي للمونتاج.")
     script = db.get(ScriptVersion, storyboard.script_version_id) if storyboard.script_version_id else None
 
     timeline = build_timeline(db, project, storyboard, script)
+    settings_ = {**DEFAULT_EDIT_SETTINGS, **(project.edit_settings or {})}
+    style = style_config(project.editing_style)
     last = db.query(Render).filter(Render.project_id == project.id).order_by(Render.version.desc()).first()
     version = (last.version + 1) if last else 1
     for render in project.renders:
         render.is_active = False
 
-    storage = get_storage()
-    poster = save_frame(
-        f"projects/{project.id}/renders/v{version}/poster.svg",
-        seed=f"{project.id}-render-{version}",
-        title_ar=project.name,
-        subtitle=f"{project.duration_sec}s · 1080x1920",
-        badge=f"RENDER V{version}",
-    )
-    clip_paths: List[str] = []
-    for scene in sorted(storyboard.scenes, key=lambda s: s.scene_number):
-        url = scene.output_url or ""
-        if url.endswith(".mp4"):
-            key = url.split("/media/", 1)[-1]
-            path = storage.local_path(key)
-            if path:
-                clip_paths.append(path)
-    url = concat_clips(f"projects/{project.id}/renders/v{version}/master.mp4", clip_paths)
+    clip_paths = _scene_clip_paths(db, storyboard)
+    brand = _brand_layer(db, project)
+    report: Dict[str, Any] = {}
+    url: Optional[str] = None
+    poster: Optional[str] = None
+    duration = storyboard.total_duration_sec
+    width, height = 1080, 1920
+
+    spec = assembly_spec_for(db, project)
+    if spec:
+        key = f"projects/{project.id}/renders/v{version}/master.mp4"
+        try:
+            record = media_bridge.render_to_storage(
+                key, lambda target: assemble_reel(spec, target)
+            )
+            report = {k: v for k, v in record.items() if k not in ("path", "key")}
+            url = record["url"]
+            duration = record.get("duration_sec") or duration
+            width = record.get("width") or width
+            height = record.get("height") or height
+            poster_key = f"projects/{project.id}/renders/v{version}/poster.png"
+            poster = media_bridge.render_to_storage(
+                poster_key,
+                lambda target: {"ok": bool(make_thumbnail(record["path"], target, at_sec=1.2))},
+            )["url"]
+        except Exception as exc:  # noqa: BLE001 - surfaced on the Render row
+            report = {"error": str(exc)[:500], "stage": "assembly"}
+            url = None
+
     if not url:
-        url = save_clip(
-            f"projects/{project.id}/renders/v{version}/master.mp4",
-            seed=f"{project.id}-{version}",
-            duration_sec=storyboard.total_duration_sec,
-            label=project.name,
-            width=540,
-            height=960,
+        # Honest fallback: a deterministic placeholder reel, labelled as one.
+        poster = poster or save_frame(
+            f"projects/{project.id}/renders/v{version}/poster.svg",
+            seed=f"{project.id}-render-{version}",
+            title_ar=project.name,
+            subtitle=f"{project.duration_sec}s · 1080x1920",
+            badge=f"RENDER V{version}",
+        )
+        url = concat_clips(f"projects/{project.id}/renders/v{version}/master.mp4", clip_paths)
+        if not url:
+            url = save_clip(
+                f"projects/{project.id}/renders/v{version}/master.mp4",
+                seed=f"{project.id}-{version}",
+                duration_sec=storyboard.total_duration_sec,
+                label=project.name,
+                width=540, height=960,
+            )
+        report.setdefault("placeholder", True)
+        report.setdefault(
+            "note",
+            "Placeholder reel: no real scene clips were available to assemble.",
         )
 
     render = Render(
         project_id=project.id,
         version=version,
         editing_style=project.editing_style,
-        settings={**DEFAULT_EDIT_SETTINGS, **(project.edit_settings or {})},
+        settings={**settings_, "color_look": style["color_look"], "render_report": report},
         timeline=timeline,
         url=url,
         poster_url=poster,
-        duration_sec=storyboard.total_duration_sec,
+        duration_sec=duration,
+        width=width,
+        height=height,
         status="completed",
         is_active=True,
     )

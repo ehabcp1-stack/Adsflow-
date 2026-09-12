@@ -23,7 +23,7 @@ type DashboardData = {
 
 export default function DashboardPage() {
   const { t, money, num, isRTL } = useLocale();
-  const { data, error, loading, reload } = useApi<DashboardData>('/dashboard');
+  const { data, error, reload } = useApi<DashboardData>('/dashboard');
   const Arrow = isRTL ? ArrowLeft : ArrowRight;
 
   return (
@@ -70,8 +70,10 @@ export default function DashboardPage() {
       </div>
 
       {/* Minimal metrics */}
+      {/* Never print $0.00 for "failed to load" — show the loading state until
+          real numbers arrive. */}
       <div className="mb-8 grid gap-4 sm:grid-cols-3">
-        {loading && !data ? (
+        {!data ? (
           <>
             <Skeleton className="h-[92px]" />
             <Skeleton className="h-[92px]" />
@@ -81,12 +83,12 @@ export default function DashboardPage() {
           <>
             <Stat
               label={t.dashboard.monthlySpend}
-              value={money(data?.metrics.monthly_ai_spend_usd ?? 0)}
-              sub={`${money(data?.metrics.monthly_target_usd ?? 0)} ${t.dashboard.ofTarget}`}
+              value={money(data.metrics.monthly_ai_spend_usd)}
+              sub={`${money(data.metrics.monthly_target_usd)} ${t.dashboard.ofTarget}`}
               tone="accent"
             />
-            <Stat label={t.dashboard.completed} value={num(data?.metrics.completed_videos ?? 0)} tone="ok" />
-            <Stat label={t.dashboard.activeProjects} value={num(data?.metrics.active_projects ?? 0)} />
+            <Stat label={t.dashboard.completed} value={num(data.metrics.completed_videos)} tone="ok" />
+            <Stat label={t.dashboard.activeProjects} value={num(data.metrics.active_projects)} />
           </>
         )}
       </div>
@@ -100,11 +102,11 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {loading && !data ? (
+        {!data ? (
           <Card>
             <LoadingBlock lines={4} />
           </Card>
-        ) : data && data.recent_projects.length > 0 ? (
+        ) : data.recent_projects.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {data.recent_projects.map((project) => (
               <ProjectCard key={project.id} project={project} />

@@ -113,6 +113,19 @@ export async function demoRequest<T>(method: string, path: string, body?: any): 
 
   // ── Reads ──────────────────────────────────────────────────────────
   if (method === 'GET') {
+    // System status (Settings → Providers). Captured from a real run like
+    // every other route; it reports which provider keys are *set* on the
+    // machine that produced the snapshot, never any key's value.
+    if (key.startsWith('/system/')) {
+      const system = routes[key];
+      if (system === undefined) {
+        throw new DemoUnavailable(
+          'This status view needs the live API — run AdFlow AI locally to see it.',
+          'هذي الحالة تحتاج السيرفر الحقيقي — شغّل النسخة المحلية حتى تشوفها.',
+        );
+      }
+      return clone(system) as T;
+    }
     if (key === `${base}`) return applyProjectOverlay(routes[base]) as T;
     if (key === '/projects' || key === '/projects?archived=false') return clone(routes['/projects']) as T;
     if (key.startsWith(`${base}/edit`)) {

@@ -5,7 +5,7 @@ import { useState } from 'react';
 
 import { PageHeader } from '@/components/AppShell';
 import { AssetUploader } from '@/components/AssetUploader';
-import { Badge, Button, Card, EmptyState, ErrorState, LoadingBlock, Modal, Tabs } from '@/components/ui';
+import { Badge, Button, EmptyState, ErrorState, InlineError, LoadingBlock, Modal, Tabs } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';
 import { api, mediaUrl } from '@/lib/api';
 import { useApi, useMutation } from '@/lib/hooks';
@@ -87,7 +87,7 @@ export default function MediaPage() {
             <div className="space-y-3 text-[13px]">
               <div className="flex flex-wrap gap-2">
                 <Badge tone={detail.usable ? 'ok' : 'warn'}>{detail.usable ? t.media.usable : t.media.notUsable}</Badge>
-                {detail.is_project_reference ? <Badge tone="gold">reference</Badge> : null}
+                {detail.is_project_reference ? <Badge tone="gold">{t.media.reference}</Badge> : null}
                 <Badge tone="neutral">{detail.orientation}</Badge>
               </div>
               <Row label={t.media.quality} value={detail.quality_score ? num(Math.round(detail.quality_score)) : '—'} />
@@ -97,7 +97,7 @@ export default function MediaPage() {
               <Row label={t.common.updated} value={date(detail.created_at)} />
               {detail.analysis?.strong_segments ? (
                 <div>
-                  <p className="section-title mb-1">segments</p>
+                  <p className="section-title mb-1">{t.media.segments}</p>
                   <ul className="ltr-nums space-y-1 text-[12px] text-ink-muted">
                     {detail.analysis.strong_segments.map((segment: any, index: number) => (
                       <li key={index}>
@@ -107,9 +107,16 @@ export default function MediaPage() {
                   </ul>
                 </div>
               ) : null}
-              <Button variant="secondary" size="sm" icon={<Trash2 className="h-3.5 w-3.5" />} loading={remove.pending} onClick={() => void remove.run(detail.id)}>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Trash2 className="h-3.5 w-3.5" />}
+                loading={remove.pending}
+                onClick={() => void remove.run(detail.id)}
+              >
                 {t.common.delete}
               </Button>
+              <InlineError error={remove.error} />
             </div>
           </div>
         ) : null}

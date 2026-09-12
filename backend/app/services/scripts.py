@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.core.errors import NotFound
+from app.services import script_qa
 from app.models import BrandKit, Concept, Project, ScriptVersion
 from app.providers.registry import get_llm
 from app.services.analysis import _brief_dict
@@ -53,9 +54,37 @@ def generate_scripts(db: Session, project: Project, *, regenerate: bool = False)
                     "angle": concept.angle if concept else "emotional",
                 },
                 "variant": variant,
+                "brand": {
+                    # The writer needs the real contact details: a CTA that says
+                    # "call us" without a number is a defect QC will catch.
+                    "name": (brand.name_ar or brand.name) if brand else "",
+                    "phone": brand.phone if brand else None,
+                    "website": brand.website if brand else None,
+                    "preferred_phrases": (brand.preferred_phrases if brand else []) or [],
+                    "pronunciation_rules": (brand.pronunciation_rules if brand else {}) or {},
+                },
                 "forbidden_phrases": (brand.forbidden_phrases if brand else []) or [],
             },
         ).data
+
+        # Second pass: read the script back the way an Iraqi copywriter would,
+        # repair what can be repaired deterministically, and record the score
+        # of what the user is actually shown — not of the first draft.
+        brand_context = {
+            "phone": brand.phone if brand else None,
+            "forbidden_phrases": (brand.forbidden_phrases if brand else []) or [],
+            "preferred_phrases": (brand.preferred_phrases if brand else []) or [],
+        }
+        data, qa_report, qa_changes = script_qa.qa_pass(
+            data,
+            preset=data.get("dialect_preset") or project.dialect,
+            brand=brand_context,
+            target_duration_sec=float(project.duration_sec),
+        )
+        critic_notes = list(data.get("critic_notes") or []) + qa_report.notes_ar()
+        if qa_changes:
+            critic_notes.append(f"تم تعديل النص تلقائياً ({len(qa_changes)} تصحيح لغوي)")
+
         script = ScriptVersion(
             project_id=project.id,
             concept_id=project.selected_concept_id,
@@ -70,8 +99,8 @@ def generate_scripts(db: Session, project: Project, *, regenerate: bool = False)
             dialect_preset=data["dialect_preset"],
             total_duration_sec=data["total_duration_sec"],
             word_count=data["word_count"],
-            score=data["score"],
-            critic_notes=data["critic_notes"],
+            score=qa_report.score,
+            critic_notes=critic_notes,
             is_selected=variant == "primary",
         )
         db.add(script)

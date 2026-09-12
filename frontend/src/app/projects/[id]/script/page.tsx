@@ -14,6 +14,7 @@ import {
   CardTitle,
   EmptyState,
   ErrorState,
+  Field,
   InlineError,
   LoadingBlock,
   Tabs,
@@ -221,13 +222,17 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
               </Button>
             ))}
           </div>
+          {/* This field feeds the "change CTA" refine action above — say so
+              rather than leaving an input with no visible purpose. */}
           <div className="mt-3">
-            <input
-              className="field"
-              placeholder={t.wizard.ctaPlaceholder}
-              value={ctaDraft}
-              onChange={(event) => setCtaDraft(event.target.value)}
-            />
+            <Field label={t.wizard.cta} hint={t.common.refine}>
+              <input
+                className="field"
+                placeholder={project.cta || t.wizard.ctaPlaceholder}
+                value={ctaDraft}
+                onChange={(event) => setCtaDraft(event.target.value)}
+              />
+            </Field>
           </div>
           <InlineError error={refine.error} />
         </Card>
