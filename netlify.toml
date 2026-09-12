@@ -40,11 +40,20 @@
   NEXT_PUBLIC_DEMO_MODE = "true"
   NEXT_PUBLIC_APP_ENV = "mock"
 
-# Demo snapshot + generated media ship with the build.
+# The snapshot changes on every deploy and is the demo's source of truth, so
+# it must be revalidated rather than served stale. Getting this wrong shows a
+# visitor an old demo indefinitely.
 [[headers]]
-  for = "/demo/*"
+  for = "/demo/snapshot.json"
   [headers.values]
-    Cache-Control = "public, max-age=300"
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# Generated media is addressed by project id, so it never changes under a
+# given URL and can be cached hard.
+[[headers]]
+  for = "/demo/media/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"
 
 [[headers]]
   for = "/_next/static/*"

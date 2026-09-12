@@ -18,12 +18,29 @@ type Snapshot = { projectId: string; capturedAt: string; routes: Record<string, 
 
 let snapshotPromise: Promise<Snapshot> | null = null;
 
+/**
+ * The snapshot is regenerated on every deploy, so it must never be served
+ * from a stale cache. `force-cache` did exactly that: it tells the browser to
+ * reuse a cached copy no matter how old, which left returning visitors looking
+ * at a days-old demo — a different project id, missing routes, and screens
+ * reporting "needs the live API" for data that had in fact shipped.
+ *
+ * `no-cache` still uses the cached bytes when they are current; it just asks
+ * the server first, so a deploy is picked up immediately for one cheap 304.
+ */
 function loadSnapshot(): Promise<Snapshot> {
   if (!snapshotPromise) {
-    snapshotPromise = fetch('/demo/snapshot.json', { cache: 'force-cache' }).then((response) => {
-      if (!response.ok) throw new Error('demo snapshot missing');
-      return response.json();
-    });
+    snapshotPromise = fetch('/demo/snapshot.json', { cache: 'no-cache' })
+      .then((response) => {
+        if (!response.ok) throw new Error('demo snapshot missing');
+        return response.json();
+      })
+      .catch((error) => {
+        // Never cache a rejected promise: one transient network blip would
+        // otherwise leave the whole demo dead until a full reload.
+        snapshotPromise = null;
+        throw error;
+      });
   }
   return snapshotPromise;
 }
