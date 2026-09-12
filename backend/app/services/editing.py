@@ -310,13 +310,41 @@ def _brand_layer(db: Session, project: Project) -> BrandLayer:
     )
 
 
-def _assembly_captions(script: Optional[ScriptVersion]) -> List[Dict[str, Any]]:
-    """One caption per spoken line, wrapped by the renderer in real pixels.
+def _assembly_captions(
+    script: Optional[ScriptVersion], voice_cues: Optional[List[Dict[str, Any]]] = None
+) -> List[Dict[str, Any]]:
+    """Caption cards for the render.
+
+    Preferred source is the voice: cues timed against the audio that actually
+    exists cannot drift from it. The script's planned line timings are the
+    fallback for a project with captions but no voice-over, and they drift by
+    exactly the difference between the estimate and the take.
 
     The on-screen wording may deliberately differ from the spoken line — the
-    dialect engine shortens spoken filler for the screen.
+    dialect engine shortens spoken filler for the screen — so a script line
+    still wins on *wording* where one is available.
     """
-    captions: List[Dict[str, Any]] = []
+    if voice_cues:
+        captions: List[Dict[str, Any]] = []
+        for cue in voice_cues:
+            text = (cue.get("text") or "").strip()
+            if not text:
+                continue
+            words = cue.get("words") or []
+            captions.append({
+                "text": text,
+                "start": float(cue.get("start", 0.0)),
+                "end": float(cue.get("end", 0.0)),
+                # The longest word carries the emphasis: it is the one the eye
+                # lands on, and it is almost always the content word.
+                "highlight_word": max((w.get("word", "") for w in words), key=len, default=None),
+                "words": words,
+                "timing_source": cue.get("source", "estimated"),
+            })
+        if captions:
+            return captions
+
+    captions = []
     for line in (script.lines if script else []) or []:
         text = (line.get("on_screen_text") or line.get("voice_line") or "").strip()
         if not text:
@@ -326,8 +354,23 @@ def _assembly_captions(script: Optional[ScriptVersion]) -> List[Dict[str, Any]]:
             "start": float(line.get("start", 0.0) or 0.0),
             "end": float(line.get("end", 0.0) or 0.0),
             "highlight_word": line.get("highlight_word"),
+            "timing_source": "planned",
         })
     return captions
+
+
+def _voice_caption_cues(db: Session, project: Project) -> Optional[List[Dict[str, Any]]]:
+    """Caption cues produced by the voice job, if that job has run."""
+    job = (
+        db.query(GenerationJob)
+        .filter(
+            GenerationJob.project_id == project.id,
+            GenerationJob.job_type == JobType.VOICE_GENERATION.value,
+        )
+        .order_by(GenerationJob.created_at.desc())
+        .first()
+    )
+    return ((job.result or {}).get("caption_cues") if job else None) or None
 
 
 def _job_media(db: Session, project: Project, job_type: str) -> Optional[str]:
@@ -380,7 +423,7 @@ def assembly_spec_for(
     )
     return AssemblySpec(
         scene_clips=clip_paths,
-        captions=_assembly_captions(script),
+        captions=_assembly_captions(script, _voice_caption_cues(db, project)),
         caption_style=caption_style,
         captions_enabled=bool(settings_.get("captions_enabled", True)),
         brand=brand,

@@ -17,12 +17,15 @@ from app.core.enums import (
     JobType,
     ProductionMethod,
     ProjectState,
+    QualityLevel,
     SceneStatus,
     WorkflowStage,
 )
 from app.core.errors import NotFound
+from app.media.align import align_words, group_into_cues
 from app.models import GenerationJob, Project, ProviderRun, Scene, ScriptVersion, Storyboard, VoiceProfile
 from app.providers import model_router
+from app.providers.model_router import model_candidates
 from app.providers.quality_judge import judge_scene, plan_retry
 from app.providers.registry import get_image, get_music, get_video, get_voice
 from app.services import approvals as approval_service
@@ -63,18 +66,21 @@ def start_production(db: Session, project: Project, *, user_id: Optional[str] = 
     jobs: List[GenerationJob] = []
     scenes = sorted(storyboard.scenes, key=lambda s: (-s.priority, s.scene_number))
 
-    # Voice first — scene timing depends on it.
+    # Voice first — scene timing depends on it, and that dependency is real
+    # rather than advisory: the voice job retimes every scene onto the audio it
+    # produced, so a scene clip cut before the voice exists is cut to the
+    # estimate and overruns its slot in the finished reel.
     script = db.get(ScriptVersion, storyboard.script_version_id) if storyboard.script_version_id else None
+    voice_job: Optional[GenerationJob] = None
     if project.voice_over_enabled and script:
-        jobs.append(
-            create_job(
-                db,
-                project=project,
-                job_type=JobType.VOICE_GENERATION.value,
-                payload={"script_id": script.id},
-                estimated_cost_usd=plan.get("voice_cost_usd", 0.0),
-            )
+        voice_job = create_job(
+            db,
+            project=project,
+            job_type=JobType.VOICE_GENERATION.value,
+            payload={"script_id": script.id},
+            estimated_cost_usd=plan.get("voice_cost_usd", 0.0),
         )
+        jobs.append(voice_job)
     jobs.append(
         create_job(
             db,
@@ -116,9 +122,31 @@ def start_production(db: Session, project: Project, *, user_id: Optional[str] = 
             )
     db.commit()
 
-    for job in jobs:
-        dispatch(job.id)
+    if voice_job is not None:
+        # Only the voice runs now. `_handle_voice` releases the rest once the
+        # storyboard has been retimed onto the finished audio.
+        dispatch(voice_job.id)
+    else:
+        for job in jobs:
+            dispatch(job.id)
     return jobs
+
+
+def dispatch_jobs_waiting_on_voice(db: Session, project: Project) -> int:
+    """Release the scene and music jobs the voice was holding back."""
+    waiting = (
+        db.query(GenerationJob)
+        .filter(
+            GenerationJob.project_id == project.id,
+            GenerationJob.status == JobStatus.QUEUED.value,
+            GenerationJob.job_type != JobType.VOICE_GENERATION.value,
+        )
+        .order_by(GenerationJob.created_at)
+        .all()
+    )
+    for job in waiting:
+        dispatch(job.id)
+    return len(waiting)
 
 
 # --------------------------------------------------------------------------
@@ -168,6 +196,60 @@ def _record_run(
     return run
 
 
+def _needs_keyframe_first(scene: Scene) -> bool:
+    """Does this scene owe us an approved still before we buy video?"""
+    return (
+        settings.REQUIRE_KEYFRAME_APPROVAL
+        and scene.production_method == ProductionMethod.AI_VIDEO.value
+        and not scene.keyframe_approved
+    )
+
+
+def _keyframe_model() -> tuple[str, str]:
+    """The cheapest image tier — a draft frame is thrown away often."""
+    return model_candidates(ProductionMethod.AI_IMAGE.value, QualityLevel.ECONOMY.value)[0]
+
+
+def _produce_keyframe(
+    db: Session, job: GenerationJob, scene: Scene, project: Project, prompt: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Generate the still an AI-video scene will be built from, then stop.
+
+    This deliberately does not continue to video. The scene lands in REVIEWING
+    with a keyframe and no output; `approve_keyframe()` is what releases the
+    paid video job.
+    """
+    set_progress(db, job, 0.35, "generating the keyframe for your approval")
+    provider_name, model = _keyframe_model()
+    keyframe_prompt = dict(prompt)
+    keyframe_prompt["storage_key"] = f"projects/{project.id}/scenes/{scene.id}-keyframe.svg"
+    provider = get_image(provider_name)
+    result = provider.generate_image(
+        prompt=keyframe_prompt, model=model, reference_urls=prompt.get("references")
+    )
+    if not result.ok:
+        raise RuntimeError(result.error or "Keyframe provider failed")
+
+    scene.keyframe_url = result.url
+    scene.keyframe_approved = False
+    scene.thumbnail_url = result.url
+    scene.status = SceneStatus.REVIEWING.value
+    _record_run(db, job, provider=result.provider, model=result.model,
+                operation=JobType.KEYFRAME_GENERATION.value, result=result, quality=0.0)
+    _finish_cost(db, job, result.provider, result.model, result.cost_usd)
+    db.commit()
+    return {
+        "scene_id": scene.id,
+        "stage": "keyframe",
+        "keyframe_url": scene.keyframe_url,
+        "awaiting_keyframe_approval": True,
+        "provider": result.provider,
+        "model": result.model,
+        "note_ar": "الإطار جاهز للمراجعة — الفيديو ما ينتج إلا بعد موافقتك.",
+        "note_en": "Keyframe ready for review — no video is generated until you approve it.",
+    }
+
+
 def _produce_scene(db: Session, job: GenerationJob) -> Dict[str, Any]:
     scene = db.get(Scene, job.scene_id)
     project = db.get(Project, job.project_id)
@@ -201,6 +283,12 @@ def _produce_scene(db: Session, job: GenerationJob) -> Dict[str, Any]:
         )
         provider_name, model = "local", media.get("renderer", "ffmpeg-pipeline")
         local_media = media
+    elif _needs_keyframe_first(scene):
+        # Hero-frame-first. A rejected video take costs roughly ten times a
+        # rejected still, so the still is generated, shown, and only once a
+        # human approves it does the video call happen — conditioned on that
+        # exact frame, which is also what keeps the ad on-model.
+        return _produce_keyframe(db, job, scene, project, prompt)
     else:
         if scene.production_method == ProductionMethod.AI_VIDEO.value:
             set_progress(db, job, 0.35, "generating cinematic video")
@@ -319,8 +407,74 @@ def _handle_voice(db: Session, job: GenerationJob) -> Dict[str, Any]:
         raise RuntimeError(result.error or "Voice provider failed")
     _record_run(db, job, provider=result.provider, model=result.model, operation="voice", result=result, quality=None)
     _finish_cost(db, job, result.provider, result.model, result.cost_usd)
+
+    # Voice-first timing. The script planned a length; the voice has an actual
+    # one. Everything downstream — scene boundaries, captions — follows the
+    # audio from here, because the audio is the thing the viewer hears.
+    set_progress(db, job, 0.85, "timing captions to the voice")
+    measured = _measured_voice_duration(result)
+    words = align_words(
+        script.voice_over_text,
+        measured,
+        provider_alignment=(result.data or {}).get("word_alignment"),
+    )
+    cues = group_into_cues(words)
+    _retime_storyboard_to_voice(db, project, measured)
     db.commit()
-    return {"url": result.url, "duration_sec": result.data.get("duration_sec"), "provider": result.provider}
+
+    # Now that scene boundaries match the audio, the scene clips can be cut.
+    released = dispatch_jobs_waiting_on_voice(db, project)
+
+    return {
+        "url": result.url,
+        "duration_sec": measured,
+        "provider": result.provider,
+        "caption_cues": [cue.as_dict() for cue in cues],
+        # "provider" when the vendor gave us real timings, "estimated" when we
+        # derived them. Never presented as measured when it is not.
+        "timing_source": cues[0].source if cues else "none",
+        "released_jobs": released,
+    }
+
+
+def _measured_voice_duration(result: Any) -> float:
+    """Prefer the file's real length over whatever the provider claimed."""
+    from app.media.probe import probe_media
+    from app.services import media_bridge
+
+    local = media_bridge.local_path_for(result.url)
+    if local:
+        info = probe_media(local)
+        if info.ok and info.duration_sec and info.duration_sec > 0:
+            return round(float(info.duration_sec), 3)
+    claimed = (result.data or {}).get("duration_sec")
+    return round(float(claimed), 3) if claimed else 0.0
+
+
+def _retime_storyboard_to_voice(db: Session, project: Project, measured_sec: float) -> None:
+    """Move scene boundaries onto the voice that was actually produced.
+
+    A scene that ends mid-sentence is the most common artefact of planning
+    timing before hearing it. Locked scenes keep their timing — a lock means
+    the user decided, and the voice does not overrule a decision.
+    """
+    if measured_sec <= 0:
+        return
+    storyboard = active_storyboard(db, project)
+    if not storyboard or not storyboard.scenes:
+        return
+    movable = [s for s in storyboard.scenes if not s.locked]
+    if not movable:
+        return
+    planned = max((s.end_time for s in storyboard.scenes), default=0.0)
+    if planned <= 0 or abs(planned - measured_sec) < 0.15:
+        return
+    scale = measured_sec / planned
+    for scene in movable:
+        scene.start_time = round(scene.start_time * scale, 3)
+        scene.end_time = round(scene.end_time * scale, 3)
+    storyboard.total_duration_sec = round(measured_sec, 3)
+    db.flush()
 
 
 @register_handler(JobType.MUSIC_GENERATION.value)
@@ -380,6 +534,11 @@ def production_status(db: Session, project: Project) -> Dict[str, Any]:
                 "production_method": s.production_method,
                 "actual_cost_usd": s.actual_cost_usd,
                 "attempts": s.generation_attempts,
+                "keyframe_url": s.keyframe_url,
+                "keyframe_approved": s.keyframe_approved,
+                # The scene is holding a still and waiting for a human before
+                # any video money is spent.
+                "awaiting_keyframe_approval": _needs_keyframe_first(s) and bool(s.keyframe_url),
             }
             for s in scenes
         ],
@@ -413,9 +572,35 @@ def regenerate_scene(db: Session, project: Project, scene: Scene) -> GenerationJ
 
 
 def approve_keyframe(db: Session, scene: Scene, approved: bool = True) -> Scene:
-    """Keyframe approval gate before expensive AI-video generation."""
+    """Keyframe approval gate before expensive AI-video generation.
+
+    Approving is what releases the video spend: the scene already has a still,
+    so this queues the video job that was deliberately not run earlier, and
+    the approved frame goes with it as the conditioning image.
+    """
     scene.keyframe_approved = approved
     db.flush()
+    if not approved or scene.production_method != ProductionMethod.AI_VIDEO.value:
+        return scene
+    if scene.output_url and scene.output_url != scene.keyframe_url:
+        return scene  # already produced; approving again must not re-buy it
+    storyboard = db.get(Storyboard, scene.storyboard_id)
+    project = db.get(Project, storyboard.project_id) if storyboard else None
+    if project is None:
+        return scene
+
+    cost_service.check_can_spend(db, project, scene.estimated_cost_usd, operation="approved keyframe → video")
+    scene.status = SceneStatus.GENERATING.value
+    job = create_job(
+        db,
+        project=project,
+        job_type=JobType.VIDEO_GENERATION.value,
+        scene_id=scene.id,
+        payload={"scene_number": scene.scene_number, "from_approved_keyframe": True},
+        estimated_cost_usd=scene.estimated_cost_usd,
+    )
+    db.commit()
+    dispatch(job.id)
     return scene
 
 

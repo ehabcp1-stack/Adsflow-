@@ -30,7 +30,7 @@ project_id_var: ContextVar[str] = ContextVar("project_id", default="")
 
 #: Settings whose values are secrets. Their values are scrubbed from any log.
 SECRET_SETTINGS = (
-    "SECRET_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "ELEVENLABS_API_KEY",
+    "SECRET_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "ELEVENLABS_API_KEY",
     "RUNWAY_API_KEY", "VEO_API_KEY", "SEEDANCE_API_KEY", "MUSIC_API_KEY",
     "S3_ACCESS_KEY", "S3_SECRET_KEY", "DEV_USER_PASSWORD", "WEBHOOK_SECRET",
 )

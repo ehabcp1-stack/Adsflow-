@@ -46,9 +46,9 @@ def test_candidates_filters_by_kind_and_enabled():
 
 
 def test_candidates_filters_by_provider_and_capability():
-    openai_llm = catalog.candidates("llm", provider_id="openai")
-    assert openai_llm
-    assert all(s.provider_id == "openai" for s in openai_llm)
+    anthropic_llm = catalog.candidates("llm", provider_id="anthropic")
+    assert anthropic_llm
+    assert all(s.provider_id == "anthropic" for s in anthropic_llm)
 
     with_reference = catalog.candidates("image", requires_reference_image=True)
     assert with_reference
@@ -70,19 +70,19 @@ def test_candidates_duration_filter_excludes_too_short_and_too_long():
 
 
 def test_configured_model_id_prefers_settings_override(monkeypatch):
-    spec = catalog.spec("openai", "gpt-5-mini")
+    spec = catalog.spec("anthropic", "claude-sonnet-5")
     assert spec is not None
-    assert catalog.configured_model_id(spec) == "gpt-5-mini"
+    assert catalog.configured_model_id(spec) == "claude-sonnet-5"
 
-    monkeypatch.setattr(settings, "OPENAI_LLM_MODEL", "gpt-5-mini-2099-01-01")
-    assert catalog.configured_model_id(spec) == "gpt-5-mini-2099-01-01"
+    monkeypatch.setattr(settings, "ANTHROPIC_LLM_MODEL", "claude-sonnet-5-2099-01-01")
+    assert catalog.configured_model_id(spec) == "claude-sonnet-5-2099-01-01"
 
 
 def test_configured_model_id_falls_back_to_seeded_default_when_unset():
-    spec = catalog.spec("gemini", "gemini-2.5-pro")
+    spec = catalog.spec("gemini", "gemini-3.5-flash")
     assert spec is not None
     assert getattr(settings, spec.model_id_setting) in (None, "")
-    assert catalog.configured_model_id(spec) == "gemini-2.5-pro"
+    assert catalog.configured_model_id(spec) == "gemini-3.5-flash"
 
 
 def test_health_snapshot_has_an_entry_per_provider_and_no_secrets():
@@ -291,9 +291,9 @@ def test_guard_integration_spend_raises_above_cap():
 
 
 def test_price_for_model_matches_catalog_cost_per_unit():
-    spec = catalog.spec("veo", "veo-3-fast")
+    spec = catalog.spec("veo", "veo-3.1-fast-generate-preview")
     assert spec is not None
-    assert pricing.price_for_model("veo-3-fast", units=1.0) == spec.cost_per_unit
+    assert pricing.price_for_model("veo-3.1-fast-generate-preview", units=1.0) == spec.cost_per_unit
 
 
 def test_describe_pricing_groups_by_kind_and_has_no_secrets(monkeypatch):
@@ -331,9 +331,12 @@ def test_registry_snapshot_grouped_and_ordered_by_fallback_priority():
     snapshot = registry.registry_snapshot()
     video_rows = {row["provider_id"]: row for row in snapshot["by_kind"]["video"]}
     assert "mock" in video_rows
-    seedance_priority = min(m["fallback_priority"] for m in video_rows["seedance"]["models"])
-    veo_priority = min(m["fallback_priority"] for m in video_rows["veo"]["models"])
-    assert seedance_priority < veo_priority  # economy candidate tried before the smart_premium default
+    veo_models = {m["model_id"]: m for m in video_rows["veo"]["models"]}
+    # Veo now carries the whole cost ladder, so the cheap tier must be reached
+    # before the expensive one.
+    assert (veo_models["veo-3.1-lite-generate-preview"]["fallback_priority"]
+            < veo_models["veo-3.1-fast-generate-preview"]["fallback_priority"]
+            < veo_models["veo-3.1-generate-preview"]["fallback_priority"])
 
 
 def test_provider_status_still_matches_original_contract():
@@ -346,3 +349,59 @@ def test_provider_status_still_matches_original_contract():
     # additions are present without breaking the original keys
     assert "healthy" in row
     assert "last_error" in row
+
+
+# --------------------------------------------------------------------------
+# Model provenance — added when the catalog was re-verified on 2026-09-12.
+# The point of these is that a future session cannot quietly reintroduce a
+# guessed or retired model id.
+# --------------------------------------------------------------------------
+def test_a_vendor_retired_model_can_never_be_routed_to():
+    retired = [s for s in catalog.all_specs() if s.deprecated]
+    assert retired, "sora-2-pro is kept as a tombstone so it is not re-added by mistake"
+    for spec in retired:
+        assert spec.sunset_date, "a deprecated model must say when it goes away"
+        assert not spec.selectable
+        for kind in catalog.KINDS:
+            assert spec not in catalog.candidates(kind, include_disabled=True)
+
+
+def test_every_verified_model_says_where_it_was_verified():
+    for spec in catalog.all_specs():
+        if spec.verified_at:
+            assert spec.docs_url, f"{spec.model_id} claims verification with no source"
+            assert spec.docs_url.startswith("https://")
+
+
+def test_every_selectable_paid_model_is_verified_or_says_it_is_not():
+    """An unverified id may exist, but it must not be silently trusted."""
+    for spec in catalog.candidates_any_kind():
+        if spec.provider_id == "mock" or spec.requires_key is None:
+            continue
+        if spec.verified_at is None:
+            assert "unverified" in spec.notes_en.lower() or "confirm" in spec.notes_en.lower(), (
+                f"{spec.provider_id}/{spec.model_id} is unverified and does not say so"
+            )
+
+
+def test_the_arabic_voice_tier_never_routes_to_a_model_without_arabic():
+    """Flash v2.5 is cheaper and faster but does not document Arabic."""
+    voices = catalog.candidates("voice")
+    assert "eleven_flash_v2_5" not in {s.model_id for s in voices}
+    primary = [s for s in voices if s.provider_id == "elevenlabs"][0]
+    assert primary.model_id == "eleven_v3"
+
+
+def test_the_router_reads_the_catalog_rather_than_its_own_list():
+    from app.core.enums import QualityLevel
+    from app.providers.model_router import model_candidates
+
+    economy = model_candidates("ai_video", QualityLevel.ECONOMY.value)
+    premium = model_candidates("ai_video", QualityLevel.MAXIMUM_QUALITY.value)
+    assert economy[0][1] == "veo-3.1-lite-generate-preview"
+    assert premium[0][1] == "veo-3.1-generate-preview"
+    # Disabling a model in the catalog must remove it from routing, with no
+    # second list to edit.
+    assert "seedance-1-pro" not in {model for _, model in economy}
+    # Routing can never come back empty.
+    assert economy[-1][0] == "mock"

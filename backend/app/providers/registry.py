@@ -167,8 +167,15 @@ def _model_snapshot(s: catalog.ModelSpec) -> Dict[str, Any]:
         "latency_tier": s.latency_tier,
         "fidelity_score": s.fidelity_score,
         "enabled": s.enabled,
+        "selectable": s.selectable,
         "fallback_priority": s.fallback_priority,
         "requires_key": s.requires_key,
+        # Provenance — an operator has to be able to see, without reading the
+        # source, whether a model id was ever checked against the vendor.
+        "docs_url": s.docs_url,
+        "verified_at": s.verified_at,
+        "deprecated": s.deprecated,
+        "sunset_date": s.sunset_date,
         "notes_ar": s.notes_ar,
         "notes_en": s.notes_en,
     }

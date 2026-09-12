@@ -273,20 +273,30 @@ class _Run:
 
 def _build_runs(tokens: Sequence[str], style: CaptionStyle,
                 ar_font: ImageFont.FreeTypeFont, la_font: ImageFont.FreeTypeFont,
-                measure: ImageDraw.ImageDraw, highlight: str = "") -> List[_Run]:
+                measure: ImageDraw.ImageDraw, highlight: str = "",
+                highlight_index: Optional[int] = None,
+                index_offset: int = 0) -> List[_Run]:
     """Merge adjacent same-script tokens into runs and measure them.
 
     A highlighted word is kept as its own run so only that word takes the
     accent colour — merging it into the sentence would tint the whole line.
+
+    `highlight_index` selects the word by position across the whole caption
+    (`index_offset` is where this line starts in that sequence). Word-level
+    captions need it: a line that says the same word twice would otherwise
+    light both, and the highlight would appear to jump backwards.
     """
     runs: List[_Run] = []
-    for token in tokens:
+    for position, token in enumerate(tokens):
         script = _token_script(token)
         if script == "neutral" and runs:
             script = runs[-1].script
         elif script == "neutral":
             script = "arabic" if contains_arabic(" ".join(tokens)) else "latin"
-        is_highlight = bool(highlight) and token.strip(".,،:;!؟") == highlight
+        if highlight_index is not None:
+            is_highlight = (index_offset + position) == highlight_index
+        else:
+            is_highlight = bool(highlight) and token.strip(".,،:;!؟") == highlight
         mergeable = runs and runs[-1].script == script and not is_highlight and not runs[-1].highlight
         if mergeable:
             runs[-1].text = f"{runs[-1].text} {token}"
@@ -363,6 +373,7 @@ def render_caption_png(
     width: int = OUT_WIDTH,
     height: int = OUT_HEIGHT,
     highlight_word: Optional[str] = None,
+    highlight_index: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Draw one caption into a transparent full-frame PNG.
 
@@ -401,9 +412,27 @@ def render_caption_png(
     block_top = max(safe_top, min(block_top, max(safe_bottom - block_height, safe_top)))
 
     highlight = (highlight_word or "").strip()
-    line_runs = [_build_runs(line.split(), style, ar_font, la_font, draw, highlight) for line in lines]
+    line_runs = []
+    consumed = 0
+    for line in lines:
+        tokens = line.split()
+        line_runs.append(
+            _build_runs(tokens, style, ar_font, la_font, draw, highlight,
+                        highlight_index=highlight_index, index_offset=consumed)
+        )
+        consumed += len(tokens)
     line_widths = [_line_width(runs, style.word_gap_px) for runs in line_runs]
-    block_width = int(max(line_widths)) if line_widths else 0
+
+    # The background box is sized from the layout WITHOUT any highlight.
+    # Highlighting splits a token into its own run, which adds a word gap and
+    # changes the measured width by a few pixels — invisible in one frame, but
+    # word-level captions draw one frame per word, so the box would breathe in
+    # and out as the highlight travelled along the line.
+    plain_widths = [
+        _line_width(_build_runs(line.split(), style, ar_font, la_font, draw), style.word_gap_px)
+        for line in lines
+    ]
+    block_width = int(max(plain_widths + line_widths)) if line_widths else 0
 
     if style.box_opacity > 0:
         pad_x, pad_y = 34, 22
@@ -457,6 +486,59 @@ def render_caption_png(
     }
 
 
+#: Below this a highlight is a flicker rather than emphasis, so the word is
+#: folded into its neighbour's frame instead of getting one of its own.
+MIN_KARAOKE_WORD_SEC = 0.14
+
+
+def expand_word_level(captions: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Turn cues carrying word timings into per-word highlight frames.
+
+    The card text never changes within a cue — only which word is lit. That is
+    what makes the caption feel spoken rather than pasted: the viewer's eye is
+    pulled along the line at the pace of the voice, and the line itself stays
+    still.
+
+    A cue without word timings passes through untouched, so a project with no
+    voice-over still gets ordinary captions.
+    """
+    out: List[Dict[str, Any]] = []
+    for caption in captions:
+        words = caption.get("words") or []
+        if len(words) < 2:
+            out.append({k: v for k, v in caption.items() if k != "words"})
+            continue
+
+        cue_start = float(caption.get("start", 0.0))
+        cue_end = float(caption.get("end", 0.0))
+        frames: List[Dict[str, Any]] = []
+        for position, word in enumerate(words):
+            start = max(float(word.get("start", cue_start)), cue_start)
+            end = min(float(word.get("end", cue_end)), cue_end)
+            if end - start < MIN_KARAOKE_WORD_SEC and frames:
+                # Too short to read — extend the previous highlight over it
+                # rather than flashing a frame nobody can perceive.
+                frames[-1]["end"] = end
+                continue
+            frames.append({
+                **{k: v for k, v in caption.items() if k != "words"},
+                "start": start,
+                "end": end,
+                "highlight_word": word.get("word"),
+                # Repeated words in one line would otherwise all light up.
+                "highlight_index": position,
+            })
+        if not frames:
+            out.append({k: v for k, v in caption.items() if k != "words"})
+            continue
+        # Cover the whole cue: the first frame starts with it and the last ends
+        # with it, so there is never a gap where the card disappears.
+        frames[0]["start"] = cue_start
+        frames[-1]["end"] = cue_end
+        out.extend(frames)
+    return out
+
+
 def render_caption_track(
     captions: Sequence[Dict[str, Any]],
     out_dir: str,
@@ -467,6 +549,7 @@ def render_caption_track(
 ) -> List[Dict[str, Any]]:
     """Rasterise a whole caption track. Each entry gains ``png`` + geometry."""
     style = style or CaptionStyle()
+    captions = expand_word_level(captions)
     directory = Path(out_dir)
     directory.mkdir(parents=True, exist_ok=True)
     rendered: List[Dict[str, Any]] = []
@@ -478,6 +561,7 @@ def render_caption_track(
         geometry = render_caption_png(
             text, str(png), style=style, width=width, height=height,
             highlight_word=caption.get("highlight_word"),
+            highlight_index=caption.get("highlight_index"),
         )
         rendered.append({**caption, "png": str(png),
                          "geometry": {k: v for k, v in geometry.items() if k != "path"}})

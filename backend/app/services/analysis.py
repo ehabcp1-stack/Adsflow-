@@ -21,8 +21,9 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.core.enums import ProductionMode
+from app.core.enums import ProductionMode, QualityLevel
 from app.models import Asset, Project, ProjectAnalysis
+from app.providers.model_router import model_candidates
 from app.providers.pricing import estimate_scene_cost, estimate_voice_cost
 from app.providers.registry import get_llm
 from app.services import assets as assets_service
@@ -324,7 +325,12 @@ def estimate_project_cost(project: Project, assets_summary: Dict[str, Any], mode
         ai_videos = max(ai_videos, 2)
 
     scene_seconds = project.duration_sec / max(scene_count, 1)
-    video_cost = round(sum(estimate_scene_cost("ai_video", scene_seconds, "veo-3-fast") for _ in range(ai_videos)), 4)
+    # Price the estimate against whatever the catalog currently calls the
+    # default video tier, so a model swap moves the quote with it.
+    default_video_model = model_candidates("ai_video", QualityLevel.SMART_PREMIUM.value)[0][1]
+    video_cost = round(
+        sum(estimate_scene_cost("ai_video", scene_seconds, default_video_model) for _ in range(ai_videos)), 4
+    )
     image_cost = round(sum(estimate_scene_cost("ai_image", scene_seconds, "gpt-image-1") for _ in range(ai_images)), 4)
     motion_cost = round(photo_motion * estimate_scene_cost("photo_motion", scene_seconds), 4)
     voice_cost = estimate_voice_cost(int(project.duration_sec * 9)) if project.voice_over_enabled else 0.0

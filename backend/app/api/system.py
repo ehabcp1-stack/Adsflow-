@@ -64,6 +64,12 @@ def _flatten(snapshot: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
                         "capabilities": model["capabilities"],
                         "supports_reference_image": model["supports_reference_image"],
                         "supports_image_to_video": model["supports_image_to_video"],
+                        # Provenance: whether this model id was ever checked
+                        # against the vendor's own docs, and where.
+                        "docs_url": model["docs_url"],
+                        "verified_at": model["verified_at"],
+                        "deprecated": model["deprecated"],
+                        "sunset_date": model["sunset_date"],
                         "notes_ar": model["notes_ar"],
                         "notes_en": model["notes_en"],
                     }

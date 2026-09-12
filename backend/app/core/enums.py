@@ -166,6 +166,9 @@ class SceneStatus(StrEnum):
 
 class JobType(StrEnum):
     IMAGE_GENERATION = "image_generation"
+    #: The still that an AI-video scene is conditioned on. Generated and
+    #: approved before any video spend — see services/production.py.
+    KEYFRAME_GENERATION = "keyframe_generation"
     VIDEO_GENERATION = "video_generation"
     VOICE_GENERATION = "voice_generation"
     MUSIC_GENERATION = "music_generation"

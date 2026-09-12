@@ -237,6 +237,57 @@ def edit_script(
     return script_service.script_payload(new_version)
 
 
+@router.get("/script/hooks")
+def script_hooks(
+    project: Project = Depends(get_project), db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """Testable openings for the selected script. Deterministic, zero cost."""
+    from app.services import hooks as hook_service
+
+    script = db.get(ScriptVersion, project.selected_script_id) if project.selected_script_id else None
+    if not script:
+        raise NotFound("Select a script first.", "اختر النص أول.")
+    variants = hook_service.generate_variants(
+        script_service.script_payload(script), project_name=project.name, limit=5
+    )
+    return {
+        "script_id": script.id,
+        "window_sec": hook_service.HOOK_WINDOW_SEC,
+        "variants": [variant.as_dict() for variant in variants],
+    }
+
+
+@router.post("/script/hooks/{variant_key}/apply")
+def apply_script_hook(
+    variant_key: str, project: Project = Depends(get_project), db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """Adopt one opening as a new script version.
+
+    A new version rather than an edit in place: the point of hook testing is to
+    keep both and compare them, so the previous opening stays in history.
+    """
+    from app.services import hooks as hook_service
+
+    script = db.get(ScriptVersion, project.selected_script_id) if project.selected_script_id else None
+    if not script:
+        raise NotFound("Select a script first.", "اختر النص أول.")
+    payload = script_service.script_payload(script)
+    variants = hook_service.generate_variants(payload, project_name=project.name, limit=5)
+    chosen = next((v for v in variants if v.key == variant_key), None)
+    if chosen is None:
+        raise NotFound("Unknown hook variant.", "الخطّاف غير موجود.")
+
+    lines = hook_service.apply_to_script_lines(script.lines or [], chosen)
+    new_version = script_service.update_script_text(db, project, script, lines)
+    new_version.hook_variant = chosen.key
+    approval_service.invalidate_downstream(
+        db, project=project, changed_entity=ApprovalEntity.SCRIPT,
+        reason=f"hook variant '{chosen.key}' applied",
+    )
+    db.commit()
+    return {**script_service.script_payload(new_version), "hook_variant": chosen.key}
+
+
 @router.post("/script/approve")
 def approve_script(
     payload: Optional[ApproveRequest] = None,

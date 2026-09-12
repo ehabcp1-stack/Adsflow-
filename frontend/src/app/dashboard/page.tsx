@@ -15,6 +15,11 @@ type DashboardData = {
   metrics: {
     monthly_ai_spend_usd: number;
     monthly_target_usd: number;
+    /** Hard ceiling for the calendar month; 0 means no ceiling is set. */
+    monthly_cap_usd: number;
+    monthly_remaining_usd: number | null;
+    budget_alert: boolean;
+    budget_capped: boolean;
     completed_videos: number;
     active_projects: number;
   };
@@ -84,8 +89,13 @@ export default function DashboardPage() {
             <Stat
               label={t.dashboard.monthlySpend}
               value={money(data.metrics.monthly_ai_spend_usd)}
-              sub={`${money(data.metrics.monthly_target_usd)} ${t.dashboard.ofTarget}`}
-              tone="accent"
+              sub={
+                data.metrics.monthly_cap_usd > 0
+                  ? `${money(data.metrics.monthly_remaining_usd ?? 0)} ${t.dashboard.leftOfCap}`
+                  : `${money(data.metrics.monthly_target_usd)} ${t.dashboard.ofTarget}`
+              }
+              /* Amber once the month is near or past its ceiling. */
+              tone={data.metrics.budget_alert || data.metrics.budget_capped ? 'warn' : 'accent'}
             />
             <Stat label={t.dashboard.completed} value={num(data.metrics.completed_videos)} tone="ok" />
             <Stat label={t.dashboard.activeProjects} value={num(data.metrics.active_projects)} />

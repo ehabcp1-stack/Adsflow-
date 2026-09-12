@@ -12,21 +12,42 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.core.enums import ProductionMethod, QualityLevel
+from app.providers import catalog
 from app.providers.pricing import estimate_scene_cost
 
-#: Ordered candidates per method and quality level: (provider, model)
-MODEL_CANDIDATES: Dict[str, Dict[str, List[tuple[str, str]]]] = {
-    ProductionMethod.AI_VIDEO.value: {
-        QualityLevel.ECONOMY.value: [("seedance", "seedance-1-pro"), ("runway", "runway-gen4-turbo"), ("mock", "mock-video-v1")],
-        QualityLevel.SMART_PREMIUM.value: [("veo", "veo-3-fast"), ("runway", "runway-gen4-turbo"), ("mock", "mock-video-v1")],
-        QualityLevel.MAXIMUM_QUALITY.value: [("veo", "veo-3"), ("veo", "veo-3-fast"), ("mock", "mock-video-v1")],
-    },
-    ProductionMethod.AI_IMAGE.value: {
-        QualityLevel.ECONOMY.value: [("gemini", "seedream-4"), ("mock", "mock-image-v1")],
-        QualityLevel.SMART_PREMIUM.value: [("openai", "gpt-image-1"), ("gemini", "gemini-image"), ("mock", "mock-image-v1")],
-        QualityLevel.MAXIMUM_QUALITY.value: [("openai", "gpt-image-1"), ("mock", "mock-image-v1")],
-    },
+#: Which catalog quality tiers each quality level will accept, best first.
+#: The router used to hold a hand-written (provider, model) table, which meant
+#: retiring a vendor needed edits in two files and the two drifted apart. It is
+#: now derived from `catalog.py`, so disabling a model there removes it from
+#: routing everywhere, and a vendor-retired model can never be routed to.
+_TIER_PREFERENCE: Dict[str, tuple[str, ...]] = {
+    QualityLevel.ECONOMY.value: ("economy", "standard", "premium", "flagship"),
+    QualityLevel.SMART_PREMIUM.value: ("standard", "premium", "economy", "flagship"),
+    QualityLevel.MAXIMUM_QUALITY.value: ("flagship", "premium", "standard", "economy"),
 }
+
+_METHOD_KIND = {
+    ProductionMethod.AI_VIDEO.value: "video",
+    ProductionMethod.AI_IMAGE.value: "image",
+}
+
+
+def model_candidates(method: str, quality_level: str) -> List[tuple[str, str]]:
+    """Ordered (provider, model) candidates for a method at a quality level.
+
+    Ordering is by how well a model's tier matches the requested level, then by
+    the catalog's own `fallback_priority`. The mock always survives at the end
+    of the list so routing can never return nothing.
+    """
+    kind = _METHOD_KIND.get(method)
+    if kind is None:
+        return [("mock", "mock-image-v1")]
+    preference = _TIER_PREFERENCE.get(quality_level, _TIER_PREFERENCE[QualityLevel.SMART_PREMIUM.value])
+    rank = {tier: index for index, tier in enumerate(preference)}
+    specs = [s for s in catalog.candidates(kind) if s.provider_id != "mock"]
+    specs.sort(key=lambda s: (rank.get(s.quality_tier, len(preference)), s.fallback_priority))
+    fallback = "mock-video-v1" if kind == "video" else "mock-image-v1"
+    return [(s.provider_id, s.model_id) for s in specs] + [("mock", fallback)]
 
 LOCAL_METHODS = {
     ProductionMethod.ORIGINAL_VIDEO.value,
@@ -109,7 +130,7 @@ def route(
             reason_ar="ينتج محلياً من مادتك — بدون كلفة مزود.",
         )
 
-    candidates = MODEL_CANDIDATES.get(method, {}).get(quality_level) or [("mock", "mock-image-v1")]
+    candidates = model_candidates(method, quality_level)
     if available_provider_names is not None:
         filtered = [c for c in candidates if c[0] in available_provider_names]
         candidates = filtered or [("mock", "mock-video-v1" if method == ProductionMethod.AI_VIDEO.value else "mock-image-v1")]
@@ -123,7 +144,7 @@ def route(
     # Budget guard: downgrade instead of failing.
     if cost > remaining_budget_usd and method == ProductionMethod.AI_VIDEO.value:
         method = ProductionMethod.AI_IMAGE.value
-        provider, model = (MODEL_CANDIDATES[method][quality_level] or [("mock", "mock-image-v1")])[0]
+        provider, model = model_candidates(method, quality_level)[0]
         cost = estimate_scene_cost(method, duration, model)
         downgraded = True
         reason_ar = "الميزانية المتبقية ما تكفي لفيديو AI — تم النزول لصورة AI مع حركة"

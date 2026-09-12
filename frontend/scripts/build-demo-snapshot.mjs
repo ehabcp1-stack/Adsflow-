@@ -60,6 +60,7 @@ const endpoints = {
   [`${p}/analysis`]: `${p}/analysis`,
   [`${p}/concepts`]: `${p}/concepts`,
   [`${p}/script`]: `${p}/script`,
+  [`${p}/script/hooks`]: `${p}/script/hooks`,
   [`${p}/voice`]: `${p}/voice`,
   [`${p}/storyboard`]: `${p}/storyboard`,
   [`${p}/production`]: `${p}/production`,

@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     # When a key is missing the corresponding Mock adapter is used and the
     # complete product remains usable. Never leak these to the browser.
     OPENAI_API_KEY: Optional[str] = None
+    ANTHROPIC_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     ELEVENLABS_API_KEY: Optional[str] = None
     RUNWAY_API_KEY: Optional[str] = None
@@ -71,6 +72,13 @@ class Settings(BaseSettings):
     MUSIC_API_KEY: Optional[str] = None
 
     FORCE_MOCK_PROVIDERS: bool = True
+
+    # Hero-frame-first: an AI-video scene generates a cheap still and waits for
+    # a human to approve it before the expensive video call, and the approved
+    # still is what the video is conditioned on. Turning this off restores
+    # blind text-to-video, which costs roughly ten times more per rejected
+    # take — it exists for unattended batch runs, not as a default.
+    REQUIRE_KEYFRAME_APPROVAL: bool = True
 
     # --- Provider HTTP behaviour (app/providers/http.py) ------------------
     PROVIDER_TIMEOUT_SEC: float = 120.0
@@ -81,17 +89,23 @@ class Settings(BaseSettings):
     PROVIDER_POLL_INTERVAL_SEC: float = 5.0
 
     # --- Provider model IDs (app/providers/catalog.py) ---------------------
-    # CRITICAL: none of these are verified against live vendor docs from this
-    # environment (no network, no API keys). They are the product's existing,
-    # already-named model identifiers, kept here ONLY so an operator can
-    # override them without a code change. Before enabling a real adapter,
-    # confirm the current model id in the vendor's own documentation and set
-    # it here — never trust these values as fact.
+    # Every one of these overrides a seeded id in the catalog. The catalog
+    # records, per model, the vendor doc it was read from and the date — see
+    # `ModelSpec.docs_url` / `verified_at`. A spec with no `verified_at` has
+    # never been confirmed; set its override here from the vendor's own docs
+    # before enabling that adapter. Vendors rename and retire models faster
+    # than this file gets edited, so re-check before flipping
+    # FORCE_MOCK_PROVIDERS off.
     OPENAI_LLM_MODEL: Optional[str] = None
+    ANTHROPIC_LLM_MODEL: Optional[str] = None
     GEMINI_LLM_MODEL: Optional[str] = None
     OPENAI_IMAGE_MODEL: Optional[str] = None
     GEMINI_IMAGE_MODEL: Optional[str] = None
+    # Veo ships three price tiers behind one key, so each tier gets its own
+    # override — otherwise one variable would rename all three at once.
     VEO_VIDEO_MODEL: Optional[str] = None
+    VEO_VIDEO_MODEL_ECONOMY: Optional[str] = None
+    VEO_VIDEO_MODEL_PREMIUM: Optional[str] = None
     RUNWAY_VIDEO_MODEL: Optional[str] = None
     SEEDANCE_VIDEO_MODEL: Optional[str] = None
     ELEVENLABS_VOICE_MODEL: Optional[str] = None
@@ -100,6 +114,7 @@ class Settings(BaseSettings):
     # --- Provider base URLs (app/providers/http.py adapters) ---------------
     # Same caveat: unverified from this environment. Override per-operator.
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    ANTHROPIC_BASE_URL: str = "https://api.anthropic.com/v1"
     GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
     ELEVENLABS_BASE_URL: str = "https://api.elevenlabs.io/v1"
     RUNWAY_BASE_URL: str = "https://api.dev.runwayml.com/v1"
@@ -110,6 +125,12 @@ class Settings(BaseSettings):
     # --- Cost / budget ---------------------------------------------------
     DEFAULT_PROJECT_BUDGET_USD: float = 12.0
     MONTHLY_BUDGET_TARGET_USD: float = 50.0
+    #: A hard ceiling across every project in the organisation for the calendar
+    #: month. The per-project budget stops one runaway render; this stops a
+    #: month of small ones adding up to a bill nobody chose. 0 disables it.
+    MONTHLY_BUDGET_HARD_CAP_USD: float = 60.0
+    #: Warn at this fraction of the cap, while there is still time to react.
+    MONTHLY_BUDGET_ALERT_RATIO: float = 0.8
     REGENERATION_RESERVE_RATIO: float = 0.20
     QC_APPROVE_THRESHOLD: float = 90.0
     QC_REVIEW_THRESHOLD: float = 85.0

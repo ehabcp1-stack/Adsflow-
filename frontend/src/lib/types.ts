@@ -266,6 +266,10 @@ export type ProductionStatus = {
     production_method: string;
     actual_cost_usd: number;
     attempts: number;
+    keyframe_url: string | null;
+    keyframe_approved: boolean;
+    /** Holding a still, waiting for a human before any video spend. */
+    awaiting_keyframe_approval: boolean;
   }[];
 };
 
@@ -415,6 +419,13 @@ export type SystemModel = {
   capabilities: string[];
   supports_reference_image: boolean;
   supports_image_to_video: boolean;
+  /** The vendor doc this model id was read from, when one exists. */
+  docs_url: string;
+  /** ISO date the id was last confirmed against `docs_url`; null = never. */
+  verified_at: string | null;
+  /** The vendor has announced this model is going away. Never routed to. */
+  deprecated: boolean;
+  sunset_date: string | null;
   notes_ar: string;
   notes_en: string;
 };

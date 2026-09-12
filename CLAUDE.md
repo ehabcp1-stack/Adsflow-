@@ -75,6 +75,19 @@ Rules:
 
 **Never generate expensive AI video simply because it is available.**
 
+**Hero-frame-first (`REQUIRE_KEYFRAME_APPROVAL`, default on).** An AI-video
+scene generates a still at the cheapest image tier, parks in `REVIEWING`, and
+stops. `production.approve_keyframe()` is what queues the paid video job, and
+the approved frame goes with it as the conditioning image — approval buys the
+take *and* pins what it looks like. Rejecting spends nothing further;
+approving twice does not buy it twice; local methods are never gated.
+
+**Two ceilings, not one.** `costs.check_can_spend()` refuses against the
+per-project budget *and* `MONTHLY_BUDGET_HARD_CAP_USD` for the calendar month
+(read from the ledger by date, mock rows excluded). Neither ever falls back to
+mock providers silently: a mock render looks like a deliverable and is not
+one, so the refusal is loud.
+
 Scene source priority (`SCENE_SOURCE_PRIORITY`, `model_router.choose_method`):
 
 ```
@@ -152,6 +165,7 @@ that happens, and nothing in it calls a paid API.
 | `probe.py` | FFprobe metadata + corruption detection — never trust the browser |
 | `motion.py` | photo → motion clip (push/pull/pan/tilt/Ken Burns/controlled) |
 | `remix.py` | real trim, speed, 9:16 reframe, grade, stabilise, concat |
+| `align.py` | word timing for the voice-over; caption cues |
 | `captions.py` | Arabic caption rasterisation |
 | `overlays.py` | logo, CTA card, end screen, timed overlay graph |
 | `audio.py` | voice + music + SFX mix, sidechain ducking, loudness mastering |
@@ -182,6 +196,31 @@ Most Arabic display fonts carry no Latin glyphs, so a line is laid out token by
 token: Arabic runs right-to-left in the Arabic font, Latin/number runs
 left-to-right in the Latin font. Install `fonts-noto-core` (the Docker image
 does). Installing Cairo or Tajawal upgrades the look with no code change.
+
+### Voice-first timing — the order is a constraint, not a preference
+
+Captions are timed against the **measured** voice track (`media/align.py`),
+never the script's estimate. The aligner prefers a vendor's own word timings
+and estimates otherwise, labelling which it used. Estimation is Arabic-aware:
+unwritten short vowels, held long vowels, shadda, and "ال" as part of the word
+it attaches to. Surplus audio becomes silence *between* words — never one word
+held for seconds — except the last, which holds to the end of the audio.
+
+Captions are word-level: one frame per word, same card, only the highlight
+moving. Three traps, each now covered by a test:
+
+* Highlight by **position**, not by string — a line with a repeated word lit
+  both and the highlight appeared to jump backwards.
+* Size the box from the **un-highlighted** layout. Highlighting splits a run
+  and adds a word gap; at one frame per word the box visibly breathes.
+* Word frames need their own minimum-duration floor. The whole-card floor of
+  0.8s silently dropped every one of them and the render burnt no captions.
+
+**The voice job releases the scene jobs.** It retimes every scene onto the
+audio it produced, so a scene cut before the voice exists is cut to the
+estimate and overruns its slot — the reel ran 29.1s against a 21.9s plan with
+scenes overhanging by up to 37%. `start_production` dispatches only the voice;
+`dispatch_jobs_waiting_on_voice()` releases the rest.
 
 
 ## 7. Iraqi Arabic requirement
@@ -434,6 +473,8 @@ Storage: local adapter in dev, S3-compatible (MinIO/AWS/R2) in production.
 | QC rules | `services/qc.py` |
 | UI strings | `frontend/src/i18n/dictionary.ts` (both locales, always) |
 | Provider/model metadata | `providers/catalog.py` (never hardcode a model id elsewhere) |
+| Hook variants for A/B testing | `services/hooks.py` |
+| Word timing / caption cues | `media/align.py` |
 | Render behaviour | `app/media/*` + `services/scene_render.py` |
 | Deterministic QC checks | `services/qc_checks.py` |
 | Iraqi language rules | `services/dialect.py` + `services/script_qa.py` |
@@ -502,3 +543,7 @@ of what the user is actually shown, not the generator's own optimism.
 - [ ] No credential can reach a log line, an error message or the browser.
 - [ ] A repeated request cannot become a second paid job.
 - [ ] Nothing claims to be verified against a live provider API unless it was.
+- [ ] Every model id carries `docs_url` + `verified_at`, or is marked unverified.
+- [ ] No paid video is bought before its keyframe is approved.
+- [ ] Captions are timed to the measured audio, never to the plan.
+- [ ] Monthly spend cap enforced; no silent downgrade to mocks.

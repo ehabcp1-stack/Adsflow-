@@ -88,6 +88,12 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(get_current_us
         "metrics": {
             "monthly_ai_spend_usd": spend["month_spend_usd"],
             "monthly_target_usd": spend["monthly_target_usd"],
+            # The hard ceiling, and whether this month is near or past it.
+            # A budget you only discover after it is gone is not a budget.
+            "monthly_cap_usd": spend["monthly_cap_usd"],
+            "monthly_remaining_usd": spend["monthly_remaining_usd"],
+            "budget_alert": spend["alert"],
+            "budget_capped": spend["capped"],
             "completed_videos": spend["completed_videos"],
             "active_projects": spend["active_projects"],
         },

@@ -159,6 +159,9 @@ class ScriptVersion(Base, TimestampMixin):
     word_count: Mapped[int] = mapped_column(Integer, default=0)
     score: Mapped[float] = mapped_column(Float, default=0.0)
     critic_notes: Mapped[List[str]] = mapped_column(JSON, default=list)
+    #: Which hook variant this version adopted, when one was applied. Kept so
+    #: a campaign report can say which opening a creative was carrying.
+    hook_variant: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     is_selected: Mapped[bool] = mapped_column(Boolean, default=False)
 
 

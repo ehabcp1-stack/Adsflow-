@@ -134,16 +134,68 @@ def _run_jobs_sync(db: Session, project: Project) -> None:
     still queued and then waits for the rest. It must never execute a job the
     pool is already running — two writers on one output file corrupt it.
     """
-    jobs = db.query(GenerationJob).filter(GenerationJob.project_id == project.id).all()
-    for job in jobs:
-        if job.status in (JobStatus.QUEUED.value, JobStatus.RETRYING.value):
-            execute_job(db, job.id)
+    # One at a time, and never while another is running. Two things depend on
+    # that: a job the pool is already running must not get a second executor
+    # (two FFmpeg processes on one output file produce a corrupt clip that
+    # still looks plausible), and the voice job retimes the storyboard before
+    # releasing the scene jobs — a scene cut while the voice is still being
+    # synthesised is cut to the estimate and overruns its slot.
+    import time as _time
+
+    deadline = _time.time() + 900
+    while _time.time() < deadline:
+        db.expire_all()
+        jobs = (
+            db.query(GenerationJob)
+            .filter(GenerationJob.project_id == project.id)
+            .order_by(GenerationJob.created_at)
+            .all()
+        )
+        if any(job.status == JobStatus.RUNNING.value for job in jobs):
+            _time.sleep(0.5)
+            continue
+        queued = [j for j in jobs if j.status in (JobStatus.QUEUED.value, JobStatus.RETRYING.value)]
+        if not queued:
+            break
+        execute_job(db, queued[0].id)
     production_service.wait_for_jobs(db, project, timeout_sec=600.0)
+
+
+def _clear_local_storage() -> None:
+    """Remove media from a previous seed. Local backend only — never S3."""
+    import shutil
+    from pathlib import Path
+
+    if settings.STORAGE_BACKEND != "local":
+        return
+    root = Path(settings.STORAGE_LOCAL_DIR)
+    if not root.exists():
+        return
+    for child in root.iterdir():
+        shutil.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink(missing_ok=True)
+
+
+def _approve_pending_keyframes(db: Session, project: Project) -> None:
+    """Approve every still waiting at the hero-frame gate, then finish the work."""
+    storyboard = production_service.active_storyboard(db, project)
+    if not storyboard:
+        return
+    pending = [s for s in storyboard.scenes if s.keyframe_url and not s.keyframe_approved]
+    if not pending:
+        return
+    for scene in pending:
+        production_service.approve_keyframe(db, scene, True)
+    db.commit()
+    _run_jobs_sync(db, project)
 
 
 def seed(reset: bool = False) -> str:
     if reset:
         Base.metadata.drop_all(bind=engine)
+        # Dropping the database orphans every file the old run produced. Left
+        # behind they are invisible bytes that the demo snapshot still copies
+        # — the export went from 4MB to 10MB of media nobody references.
+        _clear_local_storage()
     init_db()
     db = SessionLocal()
     try:
@@ -306,6 +358,11 @@ def seed(reset: bool = False) -> str:
         # --- Production (synchronous for a deterministic seed) ------------
         production_service.start_production(db, project, user_id=user.id)
         _run_jobs_sync(db, project)
+        # Hero-frame-first parks AI-video scenes on an approved-keyframe gate.
+        # The seeder plays the human who looks at each still and says yes —
+        # that is a real step in the product, not a bypass, so it runs through
+        # the same approval path the UI calls.
+        _approve_pending_keyframes(db, project)
         production_service.finish_production(db, project)
         db.commit()
 

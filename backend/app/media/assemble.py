@@ -174,7 +174,13 @@ def assemble_reel(spec: AssemblySpec, out_path: str, *,
             end = min(end, caption_limit)
             # A caption clipped to a flash is worse than no caption. The last
             # script line is normally the CTA, which the CTA card already says.
-            if end <= start + 0.8:
+            #
+            # Word-level frames are the exception: each is a fraction of a
+            # second by design, because the card stays put while the highlight
+            # moves across it. Judging them by the whole-card floor would drop
+            # every one of them and burn no captions at all.
+            floor = 0.08 if item.get("highlight_index") is not None else 0.8
+            if end <= start + floor:
                 continue
             overlays.append(TimedOverlay(png=item["png"], start=start, end=end, x="0", y="0"))
             caption_report.append({

@@ -94,14 +94,14 @@ def estimate_scene_cost(method: str, duration_sec: float = 3.5, model: str | Non
     """Estimate the cost of producing one scene."""
     base = METHOD_BASE_COST.get(method, 0.05)
     if method == ProductionMethod.AI_VIDEO.value:
-        per_sec = _price_table().get(model or "veo-3-fast", 0.15)
+        per_sec = _price_table().get(model or "veo-3.1-fast-generate-preview", 0.15)
         return round(per_sec * max(duration_sec, 2.0), 4)
     if method == ProductionMethod.AI_IMAGE.value and model:
         return round(_price_table().get(model, base), 4)
     return round(base, 4)
 
 
-def estimate_voice_cost(char_count: int, model: str = "eleven-multilingual-v2") -> float:
+def estimate_voice_cost(char_count: int, model: str = "eleven_v3") -> float:
     per_1k = _price_table().get(model, FLAT_COSTS["voice_per_1k_chars"])
     return round(per_1k * max(char_count, 1) / 1000.0, 4)
 

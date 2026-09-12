@@ -212,6 +212,7 @@ def update_script_text(db: Session, project: Project, script: ScriptVersion, lin
         word_count=len(voice_over.split()),
         score=script.score,
         critic_notes=script.critic_notes,
+        hook_variant=script.hook_variant,
         is_selected=script.is_selected,
     )
     db.add(new_version)
@@ -237,6 +238,7 @@ def script_payload(script: ScriptVersion) -> Dict[str, Any]:
         "word_count": script.word_count,
         "score": script.score,
         "critic_notes": script.critic_notes,
+        "hook_variant": script.hook_variant,
         "is_selected": script.is_selected,
         "concept_id": script.concept_id,
     }

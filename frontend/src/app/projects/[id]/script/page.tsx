@@ -32,6 +32,74 @@ type ScriptPayload = {
   state: string;
 };
 
+type HookVariant = {
+  key: string;
+  angle: string;
+  angle_ar: string;
+  voice_line: string;
+  on_screen_text: string;
+  score: number;
+  rationale_ar: string;
+  rationale_en: string;
+  warnings: string[];
+};
+
+/**
+ * The first three seconds decide a paid campaign, and which opening wins is
+ * measured rather than guessed — so the screen offers several and says what
+ * each one is trying to do, instead of presenting one as correct.
+ */
+function HookVariants({ projectId, onApplied }: { projectId: string; onApplied: () => void }) {
+  const { t, locale, num } = useLocale();
+  const { data, error, reload } = useApi<{ variants: HookVariant[]; window_sec: number }>(
+    `/projects/${projectId}/script/hooks`,
+  );
+  const apply = useMutation(async (key: string) => {
+    await api.post(`/projects/${projectId}/script/hooks/${key}/apply`);
+    reload();
+    onApplied();
+  });
+
+  if (error || !data?.variants?.length) return null;
+
+  return (
+    <Card>
+      <CardTitle>{t.script.hooks}</CardTitle>
+      <p className="mb-3 text-[12.5px] text-ink-muted">{t.script.hooksHint}</p>
+      <ul className="space-y-2.5">
+        {data.variants.map((hook) => (
+          <li key={hook.key} className="rounded-xl border border-line bg-raised p-3">
+            <div className="flex items-start justify-between gap-2">
+              <Badge tone={hook.key === 'control' ? 'neutral' : 'accent'}>
+                {locale === 'ar' ? hook.angle_ar : hook.angle.replace(/_/g, ' ')}
+              </Badge>
+              <span className="ltr-nums text-[12px] text-ink-faint">{num(hook.score)}/100</span>
+            </div>
+            <p className="mt-1.5 text-[13.5px] font-medium text-ink">{hook.voice_line}</p>
+            <p className="mt-1 text-[12px] text-ink-muted">
+              {locale === 'ar' ? hook.rationale_ar : hook.rationale_en}
+            </p>
+            {hook.warnings.length > 0 ? (
+              <p className="mt-1 text-[12px] text-warn">{hook.warnings.join(' · ')}</p>
+            ) : null}
+            {hook.key !== 'control' ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                disabled={apply.pending}
+                onClick={() => void apply.run(hook.key)}
+              >
+                {t.script.useHook}
+              </Button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
 export default function ScriptPage() {
   return <ProjectFrame>{(project, reload) => <ScriptView project={project} reloadProject={reload} />}</ProjectFrame>;
 }
@@ -262,6 +330,8 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
             ))}
           </ul>
         </Card>
+
+        <HookVariants projectId={project.id} onApplied={() => { reload(); reloadProject(); }} />
 
         <Card>
           <CardTitle>{t.script.critic}</CardTitle>

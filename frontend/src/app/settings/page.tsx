@@ -265,12 +265,49 @@ function ModelRow({ model }: { model: SystemModel }) {
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+          {model.deprecated ? <Badge tone="warn">{t.settings.retiredModel}</Badge> : null}
           {model.is_default ? <Badge tone="accent">{t.settings.defaultModel}</Badge> : null}
           <Badge tone={model.is_mock ? 'neutral' : 'dark'}>
             {model.is_mock ? t.common.mock : t.settings.realProvider}
           </Badge>
         </div>
       </div>
+
+      {/*
+        Provenance. A model id is configuration, not fact — the operator has to
+        be able to tell, without reading the source, whether anyone ever
+        checked this string against the vendor.
+      */}
+      {!model.is_mock ? (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+          {model.deprecated ? (
+            <span className="flex items-center gap-1.5 text-warn">
+              <ShieldAlert className="h-3 w-3" />
+              {t.settings.retiredOn} <span className="ltr-nums">{model.sunset_date}</span>
+            </span>
+          ) : model.verified_at ? (
+            <span className="flex items-center gap-1.5 text-ok">
+              <CheckCircle2 className="h-3 w-3" />
+              {t.settings.verifiedOn} <span className="ltr-nums">{model.verified_at}</span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-warn">
+              <ShieldAlert className="h-3 w-3" />
+              {t.settings.unverifiedModel} — {t.settings.unverifiedHint}
+            </span>
+          )}
+          {model.docs_url ? (
+            <a
+              href={model.docs_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent underline-offset-2 hover:underline"
+            >
+              {t.settings.vendorDocs}
+            </a>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Configured / healthy — never a key value, only its presence. */}
       <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11.5px]">

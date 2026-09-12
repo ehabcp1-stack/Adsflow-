@@ -70,6 +70,13 @@ function ProductionView({ project, reloadProject }: { project: ProjectDetail; re
     router.push(`/projects/${project.id}/edit`);
   });
 
+  // Hero-frame-first gate: approving the still is what releases the paid
+  // video job for that scene, so this reloads status immediately after.
+  const keyframe = useMutation(async (sceneId: string) => {
+    await api.post(`/projects/${project.id}/scenes/${sceneId}/keyframe/approve`);
+    reload();
+  });
+
   const raiseBudget = useMutation(async () => {
     await api.post(`/projects/${project.id}/budget`, { budget_limit_usd: Number(newBudget) });
     setBudgetOpen(false);
@@ -223,9 +230,19 @@ function ProductionView({ project, reloadProject }: { project: ProjectDetail; re
               <p className="section-title mb-2">{t.storyboard.scenes}</p>
               <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
                 {status.scenes.map((scene) => (
-                  <div key={scene.id} className="overflow-hidden rounded-xl border border-line">
+                  <div
+                    key={scene.id}
+                    className={clsx(
+                      'overflow-hidden rounded-xl border',
+                      scene.awaiting_keyframe_approval ? 'border-accent' : 'border-line',
+                    )}
+                  >
                     <div className="relative aspect-[9/16] bg-graphite-900">
-                      <img src={mediaUrl(scene.thumbnail_url)} alt="" className="h-full w-full object-cover" />
+                      <img
+                        src={mediaUrl(scene.thumbnail_url || scene.keyframe_url)}
+                        alt=""
+                        className="h-full w-full object-cover"
+                      />
                       <span className="ltr-nums absolute start-1.5 top-1.5 rounded bg-black/60 px-1.5 text-[10px] font-bold text-white">
                         {scene.scene_number}
                       </span>
@@ -239,6 +256,25 @@ function ProductionView({ project, reloadProject }: { project: ProjectDetail; re
                         <span className="ltr-nums text-ink-faint">{scene.quality_score ? num(scene.quality_score) : '—'}</span>
                       </div>
                       <MethodBadge method={scene.production_method} />
+                      {/*
+                        The whole point of hero-frame-first: the video is not
+                        bought until someone looks at this still and says yes.
+                      */}
+                      {scene.awaiting_keyframe_approval ? (
+                        <div className="mt-2 border-t border-line pt-2">
+                          <p className="mb-1.5 text-[11px] leading-snug text-accent">
+                            {t.production.keyframeWaiting}
+                          </p>
+                          <Button
+                            size="sm"
+                            className="w-full"
+                            disabled={keyframe.pending}
+                            onClick={() => void keyframe.run(scene.id)}
+                          >
+                            {t.production.approveKeyframe}
+                          </Button>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ))}
