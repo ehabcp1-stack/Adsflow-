@@ -8,6 +8,7 @@ loud as the next in a feed.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -205,10 +206,27 @@ def measure_loudness(path: str) -> Dict[str, Any]:
             fragment = tail[marker + len(label):].strip().split()
             if fragment:
                 try:
-                    summary[key] = float(fragment[0])
+                    summary[key] = _finite(float(fragment[0]))
                 except ValueError:
                     pass
     return summary
+
+
+#: Digital silence has a true peak of -inf dB. That is arithmetically correct
+#: and unstorable: JSON has no infinity literal, SQLite quietly accepts the
+#: Python float and Postgres rejects the insert outright — so a silent track
+#: crashed the first real render on Postgres at the point of saving it.
+#: -120 dBFS is below any audible threshold and is the honest floor.
+SILENCE_FLOOR_DB = -120.0
+
+
+def _finite(value: float) -> Optional[float]:
+    """Clamp a measurement to something a JSON column can actually hold."""
+    if math.isnan(value):
+        return None
+    if math.isinf(value):
+        return SILENCE_FLOOR_DB if value < 0 else 0.0
+    return value
 
 
 def attach_audio(video_path: str, audio_path: Optional[str], out_path: str,

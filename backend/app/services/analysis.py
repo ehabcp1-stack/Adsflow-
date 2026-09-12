@@ -56,7 +56,12 @@ def _local_path(asset: Asset) -> Optional[str]:
     if not asset.storage_key:
         return None
     try:
-        path = get_storage().local_path(asset.storage_key)
+        # Through media_bridge, not the adapter: `local_path` is None for every
+        # object-storage backend, so calling it directly turns "S3 is
+        # configured" into "no asset can be measured".
+        from app.services import media_bridge
+
+        path = media_bridge.local_path_for(asset.storage_key)
     except Exception:  # noqa: BLE001 - a storage backend quirk must not break analysis
         return None
     return path if path and Path(path).exists() else None

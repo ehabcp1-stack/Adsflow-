@@ -41,7 +41,14 @@ def key_from_url(url: Optional[str]) -> Optional[str]:
     base_path = urlparse(settings.PUBLIC_MEDIA_BASE_URL).path.rstrip("/")
     if base_path and path.startswith(base_path):
         return path[len(base_path):].lstrip("/")
-    return path.lstrip("/")
+    key = path.lstrip("/")
+    # An S3 endpoint URL is path-style: /<bucket>/<key>. Keeping the bucket in
+    # the key makes every later lookup miss — the object is at "projects/…",
+    # not "adflow/projects/…".
+    bucket = (settings.S3_BUCKET or "").strip("/")
+    if bucket and key.startswith(f"{bucket}/"):
+        return key[len(bucket) + 1:]
+    return key
 
 
 def local_path_for(url_or_key: Optional[str]) -> Optional[str]:

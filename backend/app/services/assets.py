@@ -575,7 +575,13 @@ def analyze_asset(db: Session, asset: Asset) -> Dict[str, Any]:
     try:
         if not asset.storage_key:
             raise FileNotFoundError("asset has no storage_key")
-        path = get_storage().local_path(asset.storage_key)
+        # `local_path` only answers for the local adapter — on S3 it returns
+        # None by definition. media_bridge is the layer that knows how to
+        # materialise a remote object, so asking the adapter directly meant
+        # every asset analysis failed the moment STORAGE_BACKEND=s3.
+        from app.services import media_bridge
+
+        path = media_bridge.local_path_for(asset.storage_key)
         if not path or not Path(path).exists():
             raise FileNotFoundError(f"stored file not found for key {asset.storage_key}")
 

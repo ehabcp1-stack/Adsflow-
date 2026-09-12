@@ -77,6 +77,21 @@ class S3Storage:  # pragma: no cover - requires credentials
         return self.url_for(key)
 
     def url_for(self, key: str) -> str:
+        """The URL a browser should use — which is not the S3 API endpoint.
+
+        On Cloudflare R2 (and most S3-compatible providers) the endpoint that
+        accepts uploads is private: `https://<account>.r2.cloudflarestorage.com`
+        answers signed API calls, not public GETs. Public reads come from a
+        separate host — an r2.dev bucket URL or a custom domain. Building media
+        URLs from the API endpoint produces links that 403 in the browser while
+        every upload succeeds, which looks like a rendering bug and is not.
+
+        So `PUBLIC_MEDIA_BASE_URL` wins whenever it is set; the endpoint is only
+        a fallback for a local MinIO where both happen to be the same host.
+        """
+        public = (settings.PUBLIC_MEDIA_BASE_URL or "").rstrip("/")
+        if public:
+            return f"{public}/{key.lstrip('/')}"
         base = (settings.S3_ENDPOINT_URL or "").rstrip("/")
         return f"{base}/{self.bucket}/{key.lstrip('/')}" if base else f"s3://{self.bucket}/{key}"
 

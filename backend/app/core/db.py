@@ -1,9 +1,11 @@
 """Database session/engine wiring (SQLAlchemy 2.0, sync)."""
 from __future__ import annotations
 
+import json
+import math
 import uuid
 from datetime import datetime, timezone
-from typing import Generator
+from typing import Any, Generator
 
 from sqlalchemy import DateTime, String, TypeDecorator, create_engine, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -12,12 +14,40 @@ from app.core.config import settings
 
 connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
 
+
+def _json_safe(value: Any) -> Any:
+    """Coerce values JSON cannot represent, before they reach a JSON column.
+
+    Python happily carries `inf` and `nan`; `json.dumps` happily writes them as
+    the non-standard `Infinity` / `NaN` literals; SQLite happily stores the
+    result — and Postgres rejects the insert. The measurement that produced one
+    is usually correct (the true peak of digital silence really is -inf), so the
+    failure lands far from its cause: a render that worked all through local
+    development dies at the save step the first time it runs on Postgres.
+
+    This is the last line of defence. Call sites should still clamp to a
+    meaningful value; `None` here means "not representable", not "zero".
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _dumps(value: Any) -> str:
+    return json.dumps(_json_safe(value), ensure_ascii=False)
+
+
 engine = create_engine(
     settings.DATABASE_URL,
     echo=False,
     future=True,
     pool_pre_ping=True,
     connect_args=connect_args,
+    json_serializer=_dumps,
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
