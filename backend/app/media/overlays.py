@@ -265,6 +265,16 @@ class TimedOverlay:
     x: str = "0"
     y: str = "0"
     fade: float = 0.18
+    #: Per-edge override. ``None`` means "use ``fade``". Setting either to 0.0
+    #: is what makes a run of word-level caption frames read as one steady
+    #: card: only the first frame fades in and only the last fades out.
+    fade_in: Optional[float] = None
+    fade_out: Optional[float] = None
+
+    def edge_fades(self) -> Tuple[float, float]:
+        first = self.fade if self.fade_in is None else self.fade_in
+        last = self.fade if self.fade_out is None else self.fade_out
+        return max(first, 0.0), max(last, 0.0)
 
 
 def build_overlay_graph(
@@ -290,17 +300,29 @@ def build_overlay_graph(
         inputs += ["-loop", "1", "-i", overlay.png]
         label_in = f"ov{offset}"
         chain = f"[{index}:v]format=rgba"
-        if overlay.fade > 0 and overlay.end is not None:
+        fade_in, fade_out = overlay.edge_fades()
+        if (fade_in > 0 or fade_out > 0) and overlay.end is not None:
             span = max(overlay.end - overlay.start, 0.3)
-            fade = min(overlay.fade, span / 2)
-            chain += (
-                f",fade=t=in:st={overlay.start:.2f}:d={fade:.2f}:alpha=1"
-                f",fade=t=out:st={max(overlay.end - fade, overlay.start):.2f}:d={fade:.2f}:alpha=1"
-            )
+            fade_in = min(fade_in, span / 2)
+            fade_out = min(fade_out, span / 2)
+            if fade_in > 0:
+                chain += f",fade=t=in:st={overlay.start:.2f}:d={fade_in:.2f}:alpha=1"
+            if fade_out > 0:
+                chain += (
+                    f",fade=t=out:st={max(overlay.end - fade_out, overlay.start):.2f}"
+                    f":d={fade_out:.2f}:alpha=1"
+                )
         parts.append(f"{chain}[{label_in}]")
         enable = ""
         if overlay.end is not None:
-            enable = f":enable='between(t,{overlay.start:.3f},{overlay.end:.3f})'"
+            # Half-open, not `between`: `between` is inclusive at both ends, so
+            # two abutting frames both draw on the boundary frame. With an
+            # opaque card that is invisible; with a transparent one (the
+            # stroke-only subtitle template) the boundary frame renders twice
+            # as dense and the line pulses once per word.
+            enable = (
+                f":enable='gte(t,{overlay.start:.3f})*lt(t,{overlay.end:.3f})'"
+            )
         elif overlay.start > 0:
             enable = f":enable='gte(t,{overlay.start:.3f})'"
         label_out = f"vc{offset}" if offset < len(overlays) - 1 else out_label

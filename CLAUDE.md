@@ -215,6 +215,15 @@ moving. Three traps, each now covered by a test:
   and adds a word gap; at one frame per word the box visibly breathes.
 * Word frames need their own minimum-duration floor. The whole-card floor of
   0.8s silently dropped every one of them and the render burnt no captions.
+* **Only the edges of a cue fade.** `TimedOverlay.fade` defaults to 0.18s in
+  *and* out; applied per word frame it cross-dissolves two identical cards once
+  per word — 40 of 112 frames below 60% opacity, several fully blank. The PNGs
+  are pixel-identical throughout, so this is only visible by measuring the
+  finished MP4. `expand_word_level` marks `cue_first`/`cue_last`; everything
+  between them gets `fade_in=fade_out=0`.
+* The overlay `enable` window is **half-open** (`gte*lt`). `between` is
+  inclusive at both ends, so two abutting frames both draw on the boundary
+  frame — invisible on an opaque bar, one pulse per word on a stroke-only card.
 
 **The voice job releases the scene jobs.** It retimes every scene onto the
 audio it produced, so a scene cut before the voice exists is cut to the

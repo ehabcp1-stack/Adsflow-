@@ -261,3 +261,114 @@ def test_the_caption_box_does_not_breathe_as_the_highlight_moves():
         by_text.setdefault(item["text"], []).append(box[2] - box[0])
     for text, widths in by_text.items():
         assert max(widths) == min(widths), f"caption box jitters across frames of {text!r}"
+
+
+# --------------------------------------------------------------------------
+# Typography: the caption must be still, and it must never show a box
+# --------------------------------------------------------------------------
+def test_the_line_does_not_move_between_word_frames():
+    """The flicker the user reported.
+
+    Highlighting split a token out of its run, changing the number of word gaps
+    on the line, so every word after the highlight shifted a few pixels as the
+    highlight travelled. Compared on the ALPHA channel: a colour change is the
+    highlight working, a geometry change is the tremble.
+    """
+    import tempfile
+
+    from PIL import Image, ImageChops
+
+    from app.media.captions import CaptionStyle, render_caption_track
+
+    cues = [c.as_dict() for c in group_into_cues(align_words(SENTENCE, 7.4))]
+    frames = render_caption_track(cues, tempfile.mkdtemp(), style=CaptionStyle(template="bold_bar"))
+    by_text: dict = {}
+    for frame in frames:
+        by_text.setdefault(frame["text"], []).append(frame["png"])
+
+    for text, pngs in by_text.items():
+        if len(pngs) < 2:
+            continue
+        base = Image.open(pngs[0]).convert("RGBA").split()[-1]
+        for png in pngs[1:]:
+            other = Image.open(png).convert("RGBA").split()[-1]
+            moved = sum(1 for p in ImageChops.difference(base, other).get_flattened_data() if p > 24)
+            assert moved == 0, f"caption geometry shifts by {moved}px on {text!r}"
+
+
+def test_a_face_is_chosen_by_what_it_can_actually_draw():
+    """Display faces have the best look and the thinnest coverage.
+
+    Noto Kufi carries no hyphen, colon or Latin percent. Shipping a caption in
+    it regardless renders .notdef — an empty box mid-sentence.
+    """
+    from app.media.captions import arabic_font_for, font_covers
+
+    plain = arabic_font_for("فلل ومجمع سكني متكامل")
+    assert "Kufi" in plain, "the heavier display face should win when it can"
+
+    needs_colon = arabic_font_for("اليوم: دفعة أولى")
+    assert font_covers(needs_colon, "اليوم:")
+
+
+def test_no_caption_character_renders_as_an_empty_box():
+    """Every glyph the Arabic face is handed must exist in that face."""
+    from app.media.captions import (
+        _token_script,
+        arabic_font_for,
+        font_charset,
+        normalize_caption_text,
+    )
+
+    lines = [
+        "- مدينة الزهور فلل ومجمع سكني متكامل",
+        "دفعة ٢٥% وأقساط لحد ٤ سنوات",
+        "اتصل على 07701234567",
+        "احجز اليوم: الفرصة محدودة",
+        "مشروع من TADAFQ",
+    ]
+    for line in lines:
+        path = arabic_font_for(line)
+        charset = font_charset(path)
+        if not charset:
+            continue
+        drawn = "".join(t for t in normalize_caption_text(line).split() if _token_script(t) == "arabic")
+        missing = {ch for ch in drawn if not ch.isspace() and ord(ch) not in charset}
+        assert not missing, f"{path} cannot draw {missing} from {line!r}"
+
+
+def test_standalone_punctuation_is_not_handed_to_the_arabic_face():
+    from app.media.captions import _token_script
+
+    assert _token_script("-") == "punct"
+    assert _token_script("مدينة") == "arabic"
+    assert _token_script("TADAFQ") == "latin"
+
+
+def test_the_subtitle_template_stays_out_of_the_picture():
+    """The restrained broadcast look: no box, small, low in frame.
+
+    A developer's brand film uses this rather than the heavy social bar — the
+    photography is the pitch and the caption serves the sound-off viewer.
+    """
+    from app.media.captions import style_for_template
+
+    subtitle = style_for_template("subtitle")
+    bold = style_for_template("bold_bar")
+    assert subtitle.box_opacity == 0.0, "a box would defeat the point"
+    assert subtitle.font_size < bold.font_size
+    assert subtitle.safe_bottom_pct < bold.safe_bottom_pct, "it sits lower"
+    assert subtitle.max_lines <= 2
+
+
+def test_every_caption_template_renders_inside_the_safe_zone():
+    from app.media.captions import CAPTION_TEMPLATES, render_caption_png, style_for_template
+
+    for template in CAPTION_TEMPLATES:
+        geometry = render_caption_png(
+            "وتخيل إنت بمحلات توصل لمشى الواحة",
+            f"/tmp/tpl-{template['key']}.png",
+            style=style_for_template(template["key"]),
+        )
+        assert geometry["within_safe_zone"], f"{template['key']} leaves the safe zone"
+        assert geometry["rtl"] is True

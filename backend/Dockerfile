@@ -27,6 +27,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
+# The brand faces. Noto Kufi (from fonts-noto-core above) is the fallback and
+# is perfectly readable, but Cairo and Tajawal are what the captions are
+# designed around — a display face with real weight over a photograph. Fetched
+# rather than apt-installed because Debian ships neither.
+#
+# `|| true`: a build behind a restrictive egress policy must still produce a
+# working image. captions.py walks this list and falls through to Kufi, so a
+# missing font changes the look, never the behaviour.
+ARG GOOGLE_FONTS_RAW=https://github.com/google/fonts/raw/main/ofl
+RUN mkdir -p /usr/share/fonts/truetype/adflow \
+    && (curl -fsSL --retry 2 --max-time 45 -o /tmp/cairo.ttf \
+          "${GOOGLE_FONTS_RAW}/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" \
+        && cp /tmp/cairo.ttf /usr/share/fonts/truetype/adflow/Cairo-Bold.ttf || true) \
+    && (curl -fsSL --retry 2 --max-time 45 -o /usr/share/fonts/truetype/adflow/Tajawal-Bold.ttf \
+          "${GOOGLE_FONTS_RAW}/tajawal/Tajawal-Bold.ttf" || true) \
+    && find /usr/share/fonts/truetype/adflow -size -1k -delete \
+    && fc-cache -f \
+    && fc-list :lang=ar family | sort -u
+
 WORKDIR /app
 
 # Dependencies first so application edits do not invalidate the wheel cache.

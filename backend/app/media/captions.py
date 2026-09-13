@@ -71,10 +71,12 @@ def shaping_ready() -> bool:
 #: Cairo or Tajawal (the brand fonts) upgrades the look with no code change.
 ARABIC_FONT_CANDIDATES: Dict[str, Sequence[str]] = {
     "cairo": (
+        "/usr/share/fonts/truetype/adflow/Cairo-Bold.ttf",
         "/usr/share/fonts/truetype/google-fonts/Cairo-Bold.ttf",
         "/usr/share/fonts/truetype/cairo/Cairo-Bold.ttf",
     ),
     "tajawal": (
+        "/usr/share/fonts/truetype/adflow/Tajawal-Bold.ttf",
         "/usr/share/fonts/truetype/google-fonts/Tajawal-Bold.ttf",
         "/usr/share/fonts/truetype/tajawal/Tajawal-Bold.ttf",
     ),
@@ -83,10 +85,18 @@ ARABIC_FONT_CANDIDATES: Dict[str, Sequence[str]] = {
     "noto naskh arabic": ("/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",),
     "amiri": ("/usr/share/fonts/truetype/fonts-hosny-amiri/Amiri-Bold.ttf",),
 }
+#: Ordered by how a caption actually reads on a phone, not by how common the
+#: font is. Cairo and Tajawal are the brand faces and win when the image ships
+#: them. Failing that, **Kufi before Sans**: Noto Sans Arabic is a text face —
+#: correct, but thin and quiet at caption size — while Noto Kufi is a display
+#: face with the weight an ad caption needs over a photograph.
 ARABIC_FONT_DEFAULTS: Sequence[str] = (
+    "/usr/share/fonts/truetype/adflow/Cairo-Bold.ttf",
     "/usr/share/fonts/truetype/google-fonts/Cairo-Bold.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansArabic-Bold.ttf",
+    "/usr/share/fonts/truetype/adflow/Tajawal-Bold.ttf",
+    "/usr/share/fonts/truetype/google-fonts/Tajawal-Bold.ttf",
     "/usr/share/fonts/truetype/noto/NotoKufiArabic-Bold.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansArabic-Bold.ttf",
     "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 )
@@ -134,6 +144,57 @@ def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(path, size)
 
 
+@functools.lru_cache(maxsize=32)
+def font_charset(path: str) -> frozenset:
+    """Every codepoint a font file can actually draw.
+
+    A font that lacks a character does not fail — it draws .notdef, the empty
+    box. One box in the middle of an ad caption is the kind of defect a viewer
+    reads as "made by a machine", so coverage is checked rather than assumed.
+    """
+    try:
+        from fontTools.ttLib import TTFont
+
+        with TTFont(path, fontNumber=0, lazy=True) as font:
+            codes: set = set()
+            for table in font["cmap"].tables:
+                codes |= set(table.cmap.keys())
+        return frozenset(codes)
+    except Exception:  # pragma: no cover - fontTools missing or odd font
+        return frozenset()
+
+
+def font_covers(path: Optional[str], text: str) -> bool:
+    charset = font_charset(path) if path else frozenset()
+    if not charset:
+        return True  # unknown coverage: assume yes rather than reject a face
+    return all(ord(ch) in charset or ch.isspace() for ch in text)
+
+
+def arabic_font_for(text: str, family: Optional[str] = None) -> Optional[str]:
+    """Pick the Arabic face that can draw THIS caption.
+
+    Display faces are the right look for an ad but the thinnest coverage: Noto
+    Kufi has no hyphen, colon or Latin percent. Rather than ship a box, the
+    caption falls through to the next face that covers what it needs — and the
+    heavier face is still used for every caption that does not need them.
+    """
+    named = ARABIC_FONT_CANDIDATES.get((family or "").strip().lower(), ())
+    candidates = [p for p in tuple(named) + tuple(ARABIC_FONT_DEFAULTS) if Path(p).exists()]
+    # Only what the Arabic face will actually be asked to draw. Latin words and
+    # standalone punctuation go to the Latin face, so their coverage here is
+    # irrelevant — judging the face on them would reject a good one over a
+    # hyphen it is never handed.
+    normalized = normalize_caption_text(text)
+    arabic_part = "".join(
+        token for token in normalized.split() if _token_script(token) == "arabic"
+    )
+    for path in candidates:
+        if font_covers(path, arabic_part):
+            return path
+    return resolve_arabic_font(family)
+
+
 # --------------------------------------------------------------------------
 # Text normalisation and script runs
 # --------------------------------------------------------------------------
@@ -146,7 +207,7 @@ ARABIC_RANGES = (
 #: so a caption never shows an empty box.
 PUNCTUATION_FALLBACK = str.maketrans({
     "—": "-", "–": "-", "‑": "-", "‒": "-",
-    "…": "...", "•": "-", "·": "-",
+    "…": "...", "•": "-", "·": "-", "%": "٪",
     "“": '"', "”": '"', "„": '"', "‘": "'", "’": "'",
     " ": " ", "‏": "", "‎": "", "‪": "", "‫": "", "‬": "",
 })
@@ -173,7 +234,11 @@ def _token_script(token: str) -> str:
         if ch.isalpha() or ch.isdigit():
             # Arabic-Indic digits belong to the Arabic run so numbers stay put.
             return "arabic" if 0x0660 <= ord(ch) <= 0x0669 else "latin"
-    return "neutral"
+    # A token that is only punctuation — a dash opening a line, a lone colon.
+    # Arabic display faces routinely lack these, so they go to the Latin face,
+    # which has all of them, instead of inheriting an Arabic run and rendering
+    # as an empty box.
+    return "punct"
 
 
 def shape_for_draw(text: str) -> Tuple[str, Dict[str, Any]]:
@@ -235,6 +300,19 @@ CAPTION_TEMPLATES: List[Dict[str, Any]] = [
         "label_ar": "تمييز كلمة",
         "style": {"box_opacity": 0.0, "stroke_width": 5, "font_size": 64},
     },
+    {
+        # The restrained broadcast look: a thin line low in frame that stays
+        # out of the way of the photography. Developer brand films use this
+        # rather than the heavy social bar — the picture is the pitch, and the
+        # caption is there for a viewer watching with the sound off.
+        "key": "subtitle",
+        "label_en": "Subtitle",
+        "label_ar": "سطر خفيف",
+        "style": {
+            "box_opacity": 0.0, "stroke_width": 3, "font_size": 44,
+            "safe_bottom_pct": 9.0, "line_spacing": 1.2, "max_lines": 2,
+        },
+    },
 ]
 
 
@@ -289,15 +367,26 @@ def _build_runs(tokens: Sequence[str], style: CaptionStyle,
     runs: List[_Run] = []
     for position, token in enumerate(tokens):
         script = _token_script(token)
-        if script == "neutral" and runs:
-            script = runs[-1].script
-        elif script == "neutral":
-            script = "arabic" if contains_arabic(" ".join(tokens)) else "latin"
+        if script == "punct":
+            script = "latin"
         if highlight_index is not None:
             is_highlight = (index_offset + position) == highlight_index
         else:
             is_highlight = bool(highlight) and token.strip(".,،:;!؟") == highlight
-        mergeable = runs and runs[-1].script == script and not is_highlight and not runs[-1].highlight
+        # Word-level captions draw one frame per word of the SAME line. Merging
+        # neighbours into a run — and splitting whichever word is lit back out
+        # of it — changes how many word gaps the line contains, so every word
+        # after the highlight shifts a few pixels as the highlight travels. The
+        # line reads as trembling. When a positional highlight is in play, every
+        # token becomes its own run, so the layout is identical in all frames
+        # and only the colour moves. (Arabic letters never join across a space,
+        # so per-word shaping is the same shaping.)
+        uniform = highlight_index is not None
+        mergeable = (
+            not uniform
+            and runs and runs[-1].script == script
+            and not is_highlight and not runs[-1].highlight
+        )
         if mergeable:
             runs[-1].text = f"{runs[-1].text} {token}"
         else:
@@ -381,7 +470,9 @@ def render_caption_png(
     zone instead of trusting that it did.
     """
     style = style or CaptionStyle()
-    arabic_path = resolve_arabic_font(style.font_family)
+    # Picked per caption, not per install: the heaviest face wins unless this
+    # particular line contains something it cannot draw.
+    arabic_path = arabic_font_for(text, style.font_family)
     latin_path = resolve_latin_font(style.latin_font_family)
     if not arabic_path:
         raise RuntimeError("No Arabic-capable font found. Install fonts-noto-core.")
@@ -535,6 +626,15 @@ def expand_word_level(captions: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]
         # with it, so there is never a gap where the card disappears.
         frames[0]["start"] = cue_start
         frames[-1]["end"] = cue_end
+        # The renderer needs to know which frames are the edges of the cue.
+        # Everything in between is the *same card* with the highlight moved,
+        # so fading those in and out makes the line pulse once per word — the
+        # flicker is the fade, not the typography.
+        for frame in frames:
+            frame["cue_first"] = False
+            frame["cue_last"] = False
+        frames[0]["cue_first"] = True
+        frames[-1]["cue_last"] = True
         out.extend(frames)
     return out
 

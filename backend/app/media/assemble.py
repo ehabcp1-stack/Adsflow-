@@ -182,7 +182,15 @@ def assemble_reel(spec: AssemblySpec, out_path: str, *,
             floor = 0.08 if item.get("highlight_index") is not None else 0.8
             if end <= start + floor:
                 continue
-            overlays.append(TimedOverlay(png=item["png"], start=start, end=end, x="0", y="0"))
+            # Only the edges of a cue fade. A word-level run is one card whose
+            # highlight moves; fading every frame in and out cross-dissolves
+            # two identical cards eight times a line, which reads as the text
+            # blinking. Measured in the rendered file, not in the PNGs.
+            overlays.append(TimedOverlay(
+                png=item["png"], start=start, end=end, x="0", y="0",
+                fade_in=None if item.get("cue_first", True) else 0.0,
+                fade_out=None if item.get("cue_last", True) else 0.0,
+            ))
             caption_report.append({
                 "text": item.get("text"),
                 "start": start,
