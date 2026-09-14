@@ -25,6 +25,10 @@ from app.providers import registry
 WANTED = [
     {
         "match": "TADAFQ Iraqi A",
+        # Read from the account on 2026-09-14. The id is the durable handle;
+        # the name is only how a human finds it, and renaming a voice in the
+        # dashboard must not silently detach it from the product.
+        "voice_id": "pneHqDEKkAh69hIsM5Tx",
         "name": "TADAFQ Iraqi A",
         "name_ar": "الصوت العراقي A",
         "dialect": "iraqi_emotional",
@@ -37,6 +41,7 @@ WANTED = [
     },
     {
         "match": "TADAFQ Iraqi B",
+        "voice_id": "aM1JesROynRV9XUGI7GL",
         "name": "TADAFQ Iraqi B",
         "name_ar": "الصوت العراقي B",
         "dialect": "iraqi_professional",
@@ -57,18 +62,20 @@ def _find(voices: List[Dict], wanted: str) -> Optional[Dict]:
 
 
 def register(dry_run: bool = False) -> int:
+    # The ids below are what the profiles are written from, so registration
+    # works with no network. Reaching the provider is a *verification* step:
+    # it catches a voice that was deleted or renamed in the dashboard, which is
+    # the failure that would otherwise surface as a dead render hours later.
+    voices: List[Dict] = []
     provider = registry.get_voice("elevenlabs")
-    if not getattr(provider, "available", lambda: False)():
-        print("elevenlabs adapter is not configured — set ELEVENLABS_API_KEY "
-              "and FORCE_MOCK_PROVIDERS=false", file=sys.stderr)
-        return 2
-
-    voices = provider.list_voices()
-    if not voices:
-        print("the provider returned no voices — check the key's permissions",
-              file=sys.stderr)
-        return 3
-    print(f"provider returned {len(voices)} voices")
+    if getattr(provider, "available", lambda: False)():
+        voices = provider.list_voices()
+        if voices:
+            print(f"provider reachable — {len(voices)} voices in the account")
+        else:
+            print("provider returned no voices; registering from stored ids only")
+    else:
+        print("provider not reachable from here; registering from stored ids only")
 
     init_db()
     db = SessionLocal()
@@ -78,13 +85,18 @@ def register(dry_run: bool = False) -> int:
             print("no organization in the database; seed one first", file=sys.stderr)
             return 4
 
-        missing: List[str] = []
+        unverified: List[str] = []
         for spec in WANTED:
-            found = _find(voices, spec["match"])
-            if not found:
-                missing.append(spec["match"])
-                continue
-            voice_id = found["id"]
+            voice_id = spec["voice_id"]
+            if voices:
+                found = _find(voices, spec["match"])
+                if not found:
+                    unverified.append(f"{spec['match']} (no voice by that name)")
+                elif found["id"] != voice_id:
+                    unverified.append(
+                        f"{spec['match']} (account id differs — using the account's)"
+                    )
+                    voice_id = found["id"]
             profile = (
                 db.query(VoiceProfile)
                 .filter(
@@ -111,10 +123,10 @@ def register(dry_run: bool = False) -> int:
             profile.is_demo = False
             print(f"  {action}: {spec['name']}  (voice id ends …{voice_id[-4:]})")
 
-        if missing:
-            print("\nnot found in the account: " + ", ".join(missing), file=sys.stderr)
-            print("nothing was written for those — create them in Voice Lab first,"
-                  " or fix the name to match exactly.", file=sys.stderr)
+        if unverified:
+            print("\ncould not verify against the account:", file=sys.stderr)
+            for line in unverified:
+                print(f"  - {line}", file=sys.stderr)
 
         if dry_run:
             db.rollback()
@@ -122,7 +134,7 @@ def register(dry_run: bool = False) -> int:
         else:
             db.commit()
             print("\nsaved")
-        return 0 if not missing else 5
+        return 0 if not unverified else 5
     finally:
         db.close()
 
