@@ -53,3 +53,6 @@ Claude outputs/
 
 # Local preview runs on real customer photos — never committed.
 backend/preview-storage/
+
+# Local voice sample working files — not part of the product.
+voice-samples/
