@@ -7,6 +7,7 @@ import { useState } from 'react';
 
 import { AIDirector } from '@/components/AIDirector';
 import { ProjectFrame } from '@/components/ProjectFrame';
+import { StageStatus } from '@/components/StageStatus';
 import { METHOD_COLOR, MethodBadge, SceneDetail } from '@/components/SceneDetail';
 import {
   Badge,
@@ -21,26 +22,33 @@ import {
 } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';
 import { api, mediaUrl } from '@/lib/api';
-import { useApi, useMutation } from '@/lib/hooks';
+import { useMutation, useStageJob, type StageJob } from '@/lib/hooks';
 import type { DirectorNote, ProjectDetail, Scene, Storyboard } from '@/lib/types';
 
 export default function StoryboardPage() {
   return <ProjectFrame>{(project, reload) => <StoryboardView project={project} reloadProject={reload} />}</ProjectFrame>;
 }
 
+type StoryboardPayload = { storyboard: Storyboard | null; job: StageJob | null; state?: string };
+
 function StoryboardView({ project, reloadProject }: { project: ProjectDetail; reloadProject: () => void }) {
   const { t, money, num, timecode } = useLocale();
   const router = useRouter();
-  const { data, error, loading, reload } = useApi<{ storyboard: Storyboard | null }>(
+  // The storyboard is written by a background job — see services/stage_jobs.py.
+  const { data, error, loading, reload, setData, job, working } = useStageJob<StoryboardPayload>(
     `/projects/${project.id}/storyboard`,
+    reloadProject,
   );
   const [openScene, setOpenScene] = useState<Scene | null>(null);
 
   const build = useMutation(async (regenerate = false) => {
-    await api.post(`/projects/${project.id}/storyboard/generate${regenerate ? '?regenerate=true' : ''}`);
-    reload();
-    reloadProject();
+    const result = await api.post<StoryboardPayload>(
+      `/projects/${project.id}/storyboard/generate${regenerate ? '?regenerate=true' : ''}`,
+    );
+    setData(result); // carries the queued job, which starts the polling
   });
+
+  const busy = build.pending || working;
 
   const sceneAction = useMutation(async (scene: Scene, action: string, payload?: Record<string, unknown>) => {
     const base = `/projects/${project.id}/scenes/${scene.id}`;
@@ -49,7 +57,7 @@ function StoryboardView({ project, reloadProject }: { project: ProjectDetail; re
     else if (action === 'lock') await api.post(`${base}/lock`, payload);
     else if (action === 'regenerate') await api.post(`${base}/regenerate`);
     else if (action === 'update') await api.patch(base, { changes: payload });
-    const fresh = await api.get<{ storyboard: Storyboard | null }>(`/projects/${project.id}/storyboard`);
+    const fresh = await api.get<StoryboardPayload>(`/projects/${project.id}/storyboard`);
     const updated = fresh.storyboard?.scenes.find((item) => item.id === scene.id) ?? null;
     setOpenScene(updated);
     reload();
@@ -87,10 +95,11 @@ function StoryboardView({ project, reloadProject }: { project: ProjectDetail; re
       <div className="space-y-4">
         {error ? <ErrorState error={error} onRetry={reload} /> : null}
         {build.error ? <ErrorState error={build.error} /> : null}
+        <StageStatus job={job} working={busy} onRetry={() => void build.run(false)} />
         <EmptyState
           title={t.storyboard.empty}
           action={
-            <Button loading={build.pending} icon={<Wand2 className="h-4 w-4" />} onClick={() => void build.run(false)}>
+            <Button loading={busy} disabled={busy} icon={<Wand2 className="h-4 w-4" />} onClick={() => void build.run(false)}>
               {t.common.generate}
             </Button>
           }
@@ -114,11 +123,13 @@ function StoryboardView({ project, reloadProject }: { project: ProjectDetail; re
           </Badge>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="secondary" loading={build.pending} onClick={() => void build.run(true)}>
+          <Button size="sm" variant="secondary" loading={busy} disabled={busy} onClick={() => void build.run(true)}>
             {t.common.regenerate}
           </Button>
         </div>
       </div>
+
+      <StageStatus job={job} working={busy} onRetry={() => void build.run(true)} />
 
       <AIDirector
         notes={storyboard.production_plan?.director_notes}

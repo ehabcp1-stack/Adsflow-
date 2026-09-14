@@ -104,3 +104,42 @@ def make_project(db, org, user, brand):
 @pytest.fixture
 def client(user) -> TestClient:
     return TestClient(app)
+
+
+#: Stage name -> (endpoint that starts it, endpoint that reports on it).
+_STAGES = {
+    "analysis": ("/analysis/run", "/analysis"),
+    "concepts": ("/concepts/generate", "/concepts"),
+    "script": ("/script/generate", "/script"),
+    "storyboard": ("/storyboard/generate", "/storyboard"),
+}
+
+
+@pytest.fixture
+def stage(client):
+    """Start a writing stage and poll until it lands, the way a browser does.
+
+    These four endpoints used to do the work inline, so every test could
+    assume the response already carried the result. They now queue a job —
+    because against a real LLM the inline call outlived the HTTP connection
+    and the work was lost — so the client polls. Tests poll too: a helper that
+    reached into the job system instead would stop exercising the path the
+    product actually uses.
+    """
+    import time
+
+    def _run(pid: str, name: str, *, regenerate: bool = False, timeout: float = 30.0) -> dict:
+        start, report = _STAGES[name]
+        started = client.post(f"/api/v1/projects/{pid}{start}", params={"regenerate": regenerate})
+        assert started.status_code == 200, started.text
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            payload = client.get(f"/api/v1/projects/{pid}{report}").json()
+            job = payload.get("job") or {}
+            if job.get("status") == "completed":
+                return payload
+            assert job.get("status") != "failed", f"{name} job failed: {job.get('error_message')}"
+            time.sleep(0.05)
+        raise AssertionError(f"{name} did not finish within {timeout}s")
+
+    return _run

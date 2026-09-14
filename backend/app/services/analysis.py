@@ -474,3 +474,4 @@ def run_analysis(db: Session, project: Project, *, version: Optional[int] = None
     project.estimated_cost_usd = cost_plan["estimated_total_usd"]
     db.flush()
     return analysis
+

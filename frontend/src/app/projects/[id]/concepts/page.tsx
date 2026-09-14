@@ -7,6 +7,7 @@ import { useState } from 'react';
 
 import { AIDirector } from '@/components/AIDirector';
 import { ProjectFrame } from '@/components/ProjectFrame';
+import { StageStatus } from '@/components/StageStatus';
 import { useDirectorMode } from '@/components/AppShell';
 import {
   Badge,
@@ -22,7 +23,7 @@ import {
 } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';
 import { api } from '@/lib/api';
-import { useApi, useMutation } from '@/lib/hooks';
+import { useMutation, useStageJob, type StageJob } from '@/lib/hooks';
 import type { Concept, DirectorNote, ProjectDetail } from '@/lib/types';
 
 type ConceptsPayload = {
@@ -31,6 +32,8 @@ type ConceptsPayload = {
   actions: { key: string; label_en: string; label_ar: string }[];
   selected_concept_id: string | null;
   director_notes: DirectorNote[];
+  /** Concepts are written by a background job — see services/stage_jobs.py. */
+  job: StageJob | null;
   state: string;
 };
 
@@ -42,16 +45,24 @@ function ConceptsView({ project, reloadProject }: { project: ProjectDetail; relo
   const { t, locale, num } = useLocale();
   const router = useRouter();
   const { directorMode } = useDirectorMode();
-  const { data, error, loading, reload } = useApi<ConceptsPayload>(`/projects/${project.id}/concepts`);
+  const { data, error, loading, reload, setData, job, working } = useStageJob<ConceptsPayload>(
+    `/projects/${project.id}/concepts`,
+    reloadProject,
+  );
   const [selected, setSelected] = useState<string | null>(null);
   const [showAlternatives, setShowAlternatives] = useState(false);
   const [detail, setDetail] = useState<Concept | null>(null);
 
+  // Queues the work and returns at once; `setData` carries the queued job,
+  // which is what turns the polling on.
   const generate = useMutation(async (regenerate = false) => {
-    await api.post(`/projects/${project.id}/concepts/generate${regenerate ? '?regenerate=true' : ''}`);
-    reload();
-    reloadProject();
+    const result = await api.post<ConceptsPayload>(
+      `/projects/${project.id}/concepts/generate${regenerate ? '?regenerate=true' : ''}`,
+    );
+    setData(result);
   });
+
+  const busy = generate.pending || working;
 
   const refine = useMutation(async (conceptId: string, action: string) => {
     await api.post(`/projects/${project.id}/concepts/${conceptId}/refine`, { action });
@@ -88,7 +99,8 @@ function ConceptsView({ project, reloadProject }: { project: ProjectDetail; relo
           <Button
             size="sm"
             variant={items.length ? 'secondary' : 'primary'}
-            loading={generate.pending}
+            loading={busy}
+            disabled={busy}
             icon={<Wand2 className="h-3.5 w-3.5" />}
             onClick={() => void generate.run(items.length > 0)}
           >
@@ -97,6 +109,9 @@ function ConceptsView({ project, reloadProject }: { project: ProjectDetail; relo
         </div>
       </div>
 
+      <StageStatus job={job} working={busy} onRetry={() => void generate.run(false)} />
+      <InlineError error={generate.error} />
+
       <AIDirector notes={data?.director_notes} />
 
       {items.length === 0 ? (
@@ -104,7 +119,7 @@ function ConceptsView({ project, reloadProject }: { project: ProjectDetail; relo
           title={t.errors.noConcepts}
           hint={t.concepts.subtitle}
           action={
-            <Button loading={generate.pending} onClick={() => void generate.run(false)}>
+            <Button loading={busy} disabled={busy} onClick={() => void generate.run(false)}>
               {t.common.generate}
             </Button>
           }

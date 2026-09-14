@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 
 import { AIDirector } from '@/components/AIDirector';
 import { ProjectFrame } from '@/components/ProjectFrame';
+import { StageStatus } from '@/components/StageStatus';
 import {
   Button,
   Card,
@@ -18,13 +19,15 @@ import {
 } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';
 import { api } from '@/lib/api';
-import { useApi, useMutation } from '@/lib/hooks';
+import { useMutation, useStageJob, type StageJob } from '@/lib/hooks';
 import type { Analysis, ProjectDetail } from '@/lib/types';
 
 type AnalysisPayload = {
   steps: { key: string; label_en: string; label_ar: string }[];
   analysis: Analysis | null;
   versions: { id: string; version: number }[];
+  /** Present since the analysis became a background job — see useStageJob. */
+  job: StageJob | null;
   state: string;
 };
 
@@ -35,13 +38,20 @@ export default function AnalysisPage() {
 function AnalysisView({ project, reloadProject }: { project: ProjectDetail; reloadProject: () => void }) {
   const { t, locale, money, num } = useLocale();
   const router = useRouter();
-  const { data, error, loading, reload } = useApi<AnalysisPayload>(`/projects/${project.id}/analysis`);
   const [activeStep, setActiveStep] = useState(-1);
+
+  // The analysis is a background job: `POST /analysis/run` returns as soon as
+  // it is queued, and this endpoint is how we find out what happened. The
+  // poll survives a page reload — the job keeps running on the server either
+  // way — so re-opening this screen mid-analysis simply shows it working.
+  const { data, error, loading, reload, setData, job, working } = useStageJob<AnalysisPayload>(
+    `/projects/${project.id}/analysis`,
+    reloadProject,
+  );
 
   const run = useMutation(async () => {
     const result = await api.post<AnalysisPayload>(`/projects/${project.id}/analysis/run`);
-    reload();
-    reloadProject();
+    setData(result); // carries the queued job, which starts the polling
     return result;
   });
 
@@ -51,17 +61,21 @@ function AnalysisView({ project, reloadProject }: { project: ProjectDetail; relo
     router.push(`/projects/${project.id}/concepts`);
   });
 
-  // Progress states while the engine works.
+  const busy = run.pending || working;
+
+  // Progress states while the engine works. The steps are indicative: the job
+  // reports coarse progress, and this walks the list at a readable pace and
+  // holds on the last one rather than claiming to be finished.
   useEffect(() => {
-    if (!run.pending) {
+    if (!busy) {
       setActiveStep(-1);
       return;
     }
     setActiveStep(0);
     const steps = data?.steps.length ?? 6;
-    const timer = setInterval(() => setActiveStep((current) => Math.min(current + 1, steps - 1)), 420);
+    const timer = setInterval(() => setActiveStep((current) => Math.min(current + 1, steps - 1)), 2200);
     return () => clearInterval(timer);
-  }, [run.pending, data?.steps.length]);
+  }, [busy, data?.steps.length]);
 
   if (loading && !data) return <LoadingBlock lines={6} />;
 
@@ -79,10 +93,17 @@ function AnalysisView({ project, reloadProject }: { project: ProjectDetail; relo
           action={
             <Button
               onClick={() => void run.run()}
-              loading={run.pending}
+              loading={busy}
+              disabled={busy}
               icon={analysis ? <RefreshCw className="h-4 w-4" /> : <Play className="h-4 w-4" />}
             >
-              {run.pending ? t.analysis.running : analysis ? t.common.regenerate : t.analysis.run}
+              {busy
+                ? job?.status === 'queued'
+                  ? t.analysis.queued
+                  : t.analysis.running
+                : analysis
+                  ? t.common.regenerate
+                  : t.analysis.run}
             </Button>
           }
         >
@@ -91,8 +112,8 @@ function AnalysisView({ project, reloadProject }: { project: ProjectDetail; relo
 
         <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {(data?.steps ?? []).map((step, index) => {
-            const done = analysis && !run.pending ? true : activeStep > index;
-            const active = run.pending && activeStep === index;
+            const done = analysis && !busy ? true : activeStep > index;
+            const active = busy && activeStep === index;
             return (
               <li
                 key={step.key}
@@ -116,6 +137,8 @@ function AnalysisView({ project, reloadProject }: { project: ProjectDetail; relo
             );
           })}
         </ol>
+
+        <StageStatus job={job} working={busy} onRetry={() => void run.run()} />
         <InlineError error={run.error} />
       </Card>
 

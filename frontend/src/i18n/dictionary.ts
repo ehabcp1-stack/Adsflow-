@@ -81,6 +81,10 @@ export const dictionary = {
       free: 'مجاني',
       unavailable: 'غير متاح',
       status: 'الحالة',
+      queued: 'بالدور…',
+      working: 'يشتغل…',
+      inBackground: 'الشغل يمشي بالخلفية — تكدر تترك الصفحة وترجع.',
+      jobFailed: 'الخطوة ما اكتملت',
     },
     stages: {
       brief: 'الطلب',
@@ -157,6 +161,7 @@ export const dictionary = {
       keyMessages: 'الرسائل الأساسية',
       approveAndContinue: 'اعتمد وكمّل للأفكار',
       empty: 'ما تم التحليل بعد',
+      queued: 'التحليل بالدور…',
     },
     concepts: {
       title: 'ثلاث أفكار إبداعية',
@@ -445,6 +450,9 @@ export const dictionary = {
       apply: 'Apply', details: 'Details', refresh: 'Refresh', copy: 'Copy', copied: 'Copied',
       show: 'Show', hide: 'Hide', auto: 'Auto', manual: 'Manual', provider: 'Provider',
       model: 'Model', free: 'Free', unavailable: 'Unavailable', status: 'Status',
+      queued: 'Queued…', working: 'Working…',
+      inBackground: 'This runs in the background — you can leave the page and come back.',
+      jobFailed: 'This step did not finish',
     },
     stages: {
       brief: 'Brief', analyze: 'Analyze', concepts: 'Concepts', script: 'Script', voice: 'Voice',
@@ -475,6 +483,7 @@ export const dictionary = {
       confidence: 'Confidence', recommendedMode: 'Recommended production mode', recommendedAngle: 'Marketing angle',
       recommendedVoice: 'Voice style', estimatedCost: 'Estimated cost', assets: 'Asset analysis',
       keyMessages: 'Key messages', approveAndContinue: 'Approve & continue to concepts', empty: 'Not analyzed yet',
+      queued: 'Queued…',
     },
     concepts: {
       title: 'Three creative concepts', subtitle: 'Pick the one that fits your campaign', hook: 'Hook',

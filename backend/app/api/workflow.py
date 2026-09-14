@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_project
 from app.core.db import get_db
-from app.core.enums import ApprovalEntity, ProjectState, WorkflowStage
+from app.core.enums import ApprovalEntity, JobType, ProjectState, WorkflowStage
 from app.core.errors import NotFound
 from app.core.security import get_current_user
 from app.models import Concept, Project, ScriptVersion, Scene, User, VoiceProfile
@@ -27,7 +27,9 @@ from app.services import concepts as concept_service
 from app.services import scripts as script_service
 from app.services import storyboards as storyboard_service
 from app.services import voices as voice_service
-from app.services.analysis import ANALYSIS_STEPS, run_analysis
+from app.services import stage_jobs
+from app.services.analysis import ANALYSIS_STEPS
+from app.services.jobs import dispatch, job_payload
 from app.services.dialect import list_presets
 from app.services.director import notes_for_stage
 
@@ -60,22 +62,40 @@ def _analysis_payload(analysis) -> Dict[str, Any]:
 @router.get("/analysis")
 def get_analysis(project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
     analysis = concept_service.latest_analysis(db, project)
+    job = stage_jobs.latest_job(db, project, JobType.ANALYSIS.value)
     return {
         "steps": ANALYSIS_STEPS,
         "analysis": _analysis_payload(analysis) if analysis else None,
         "versions": [{"id": a.id, "version": a.version} for a in sorted(project.analyses, key=lambda a: -a.version)],
+        # The UI polls this endpoint while the job runs; without it the only
+        # signal of a failed analysis is an empty screen.
+        "job": job_payload(job) if job else None,
         "state": project.state,
     }
 
 
 @router.post("/analysis/run")
 def run_project_analysis(project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
-    if project.state == ProjectState.DRAFT.value:
-        approval_service.set_state(db, project, ProjectState.ANALYZING, note="analysis started")
-    analysis = run_analysis(db, project)
-    approval_service.set_state(db, project, ProjectState.ANALYSIS_READY, note="analysis ready")
+    """Queue the analysis and return immediately.
+
+    This used to call `run_analysis` inline. Against a real LLM that is a
+    ~90-second call chain, and the browser gave up at ~40 with
+    "cannot reach the server" — taking the half-finished transaction with it,
+    so the analysis was not merely unseen, it was lost. The client now polls
+    `GET /analysis`.
+    """
+    job = stage_jobs.start_analysis(db, project)
+    # Commit before dispatching: the worker reads the job through its own
+    # session, and an uncommitted row does not exist as far as it is concerned.
     db.commit()
-    return {"steps": ANALYSIS_STEPS, "analysis": _analysis_payload(analysis), "state": project.state}
+    dispatch(job.id)
+    analysis = concept_service.latest_analysis(db, project)
+    return {
+        "steps": ANALYSIS_STEPS,
+        "analysis": _analysis_payload(analysis) if analysis else None,
+        "job": job_payload(job),
+        "state": project.state,
+    }
 
 
 @router.post("/analysis/approve")
@@ -104,12 +124,14 @@ def approve_analysis(
 @router.get("/concepts")
 def get_concepts(project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
     items = sorted(project.concepts, key=lambda c: (c.is_alternative, -c.score_total))
+    job = stage_jobs.latest_job(db, project, JobType.CONCEPTS.value)
     return {
         "items": [concept_service.concept_payload(c) for c in items if not c.is_alternative][:3],
         "alternatives": [concept_service.concept_payload(c) for c in items if c.is_alternative],
         "actions": concept_service.REFINE_ACTIONS,
         "selected_concept_id": project.selected_concept_id,
         "director_notes": notes_for_stage(db, project, WorkflowStage.CONCEPTS),
+        "job": job_payload(job) if job else None,
         "state": project.state,
     }
 
@@ -118,12 +140,11 @@ def get_concepts(project: Project = Depends(get_project), db: Session = Depends(
 def generate_concepts(
     project: Project = Depends(get_project), db: Session = Depends(get_db), regenerate: bool = False
 ) -> Dict[str, Any]:
-    approval_service.require_approval(db, project, WorkflowStage.CONCEPTS)
-    concept_service.generate_concepts(db, project, regenerate=regenerate)
-    if project.state == ProjectState.ANALYSIS_READY.value:
-        approval_service.set_state(db, project, ProjectState.CONCEPT_REVIEW, note="concepts generated")
+    """Queue the concept work. See services/stage_jobs.py for why."""
+    job = stage_jobs.start_concepts(db, project, regenerate=regenerate)
     db.commit()
-    return get_concepts(project=project, db=db)
+    dispatch(job.id)
+    return {**get_concepts(project=project, db=db), "job": job_payload(job)}
 
 
 @router.post("/concepts/select")
@@ -177,11 +198,13 @@ def get_script(project: Project = Depends(get_project), db: Session = Depends(ge
     latest_by_variant: Dict[str, Any] = {}
     for script in scripts:
         latest_by_variant.setdefault(script.variant, script)
+    job = stage_jobs.latest_job(db, project, JobType.SCRIPT.value)
     return {
         "variants": [script_service.script_payload(s) for s in latest_by_variant.values()],
         "selected_script_id": project.selected_script_id,
         "actions": script_service.REFINE_ACTIONS,
         "dialect_presets": list_presets(),
+        "job": job_payload(job) if job else None,
         "state": project.state,
     }
 
@@ -190,12 +213,12 @@ def get_script(project: Project = Depends(get_project), db: Session = Depends(ge
 def generate_script(
     project: Project = Depends(get_project), db: Session = Depends(get_db), regenerate: bool = False
 ) -> Dict[str, Any]:
-    approval_service.require_approval(db, project, WorkflowStage.SCRIPT)
-    script_service.generate_scripts(db, project, regenerate=regenerate)
-    if project.state == ProjectState.CONCEPT_APPROVED.value:
-        approval_service.set_state(db, project, ProjectState.SCRIPT_REVIEW, note="script drafted")
+    """Queue the script work — three variants, three model calls, the longest
+    stage in the product. See services/stage_jobs.py."""
+    job = stage_jobs.start_script(db, project, regenerate=regenerate)
     db.commit()
-    return get_script(project=project, db=db)
+    dispatch(job.id)
+    return {**get_script(project=project, db=db), "job": job_payload(job)}
 
 
 @router.post("/script/select")
@@ -372,8 +395,10 @@ def select_voice(
 @router.get("/storyboard")
 def get_storyboard(project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
     storyboard = storyboard_service.active_storyboard(db, project)
+    job = stage_jobs.latest_job(db, project, JobType.STORYBOARD.value)
     return {
         "storyboard": storyboard_service.storyboard_payload(db, storyboard) if storyboard else None,
+        "job": job_payload(job) if job else None,
         "state": project.state,
     }
 
@@ -382,12 +407,11 @@ def get_storyboard(project: Project = Depends(get_project), db: Session = Depend
 def generate_storyboard(
     project: Project = Depends(get_project), db: Session = Depends(get_db), regenerate: bool = False
 ) -> Dict[str, Any]:
-    approval_service.require_approval(db, project, WorkflowStage.STORYBOARD)
-    storyboard = storyboard_service.build_storyboard(db, project, regenerate=regenerate)
-    if project.state in (ProjectState.SCRIPT_APPROVED.value, ProjectState.STORYBOARD_APPROVED.value):
-        approval_service.set_state(db, project, ProjectState.STORYBOARD_REVIEW, note="storyboard built")
+    """Queue the storyboard work. See services/stage_jobs.py."""
+    job = stage_jobs.start_storyboard(db, project, regenerate=regenerate)
     db.commit()
-    return {"storyboard": storyboard_service.storyboard_payload(db, storyboard), "state": project.state}
+    dispatch(job.id)
+    return {**get_storyboard(project=project, db=db), "job": job_payload(job)}
 
 
 @router.patch("/scenes/{scene_id}")

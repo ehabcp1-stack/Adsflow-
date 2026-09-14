@@ -177,7 +177,13 @@ class JobType(StrEnum):
     CAPTION_RENDER = "caption_render"
     FINAL_RENDER = "final_render"
     QC_CHECK = "qc_check"
+    #: The four writing stages. Each is a chain of model calls that outlives an
+    #: HTTP connection, so none of them may run inside a request — see
+    #: services/stage_jobs.py.
     ANALYSIS = "analysis"
+    CONCEPTS = "concepts"
+    SCRIPT = "script"
+    STORYBOARD = "storyboard"
 
 
 class JobStatus(StrEnum):

@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 
 import { DirectorHint } from '@/components/AIDirector';
 import { ProjectFrame } from '@/components/ProjectFrame';
+import { StageStatus } from '@/components/StageStatus';
 import {
   Badge,
   Button,
@@ -21,7 +22,7 @@ import {
 } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';
 import { api } from '@/lib/api';
-import { useApi, useMutation } from '@/lib/hooks';
+import { useApi, useMutation, useStageJob, type StageJob } from '@/lib/hooks';
 import type { ProjectDetail, ScriptLine, ScriptVersion } from '@/lib/types';
 
 type ScriptPayload = {
@@ -29,6 +30,8 @@ type ScriptPayload = {
   selected_script_id: string | null;
   actions: { key: string; label_en: string; label_ar: string }[];
   dialect_presets: { id: string; label_ar: string; label_en: string; tone_rules: string[] }[];
+  /** Three variants, three model calls — the longest stage, so it is a job. */
+  job: StageJob | null;
   state: string;
 };
 
@@ -107,7 +110,10 @@ export default function ScriptPage() {
 function ScriptView({ project, reloadProject }: { project: ProjectDetail; reloadProject: () => void }) {
   const { t, locale, num, timecode } = useLocale();
   const router = useRouter();
-  const { data, error, loading, reload } = useApi<ScriptPayload>(`/projects/${project.id}/script`);
+  const { data, error, loading, reload, setData, job, working } = useStageJob<ScriptPayload>(
+    `/projects/${project.id}/script`,
+    reloadProject,
+  );
   const [variant, setVariant] = useState<'primary' | 'more_sales' | 'more_emotional'>('primary');
   const [editing, setEditing] = useState(false);
   const [lines, setLines] = useState<ScriptLine[]>([]);
@@ -119,11 +125,16 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
     if (current) setLines(current.lines);
   }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Queues the work and returns at once; `setData` carries the queued job,
+  // which is what turns the polling on.
   const generate = useMutation(async (regenerate = false) => {
-    await api.post(`/projects/${project.id}/script/generate${regenerate ? '?regenerate=true' : ''}`);
-    reload();
-    reloadProject();
+    const result = await api.post<ScriptPayload>(
+      `/projects/${project.id}/script/generate${regenerate ? '?regenerate=true' : ''}`,
+    );
+    setData(result);
   });
+
+  const busy = generate.pending || working;
 
   const refine = useMutation(async (action: string) => {
     if (!current) return;
@@ -164,11 +175,12 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
       <div className="space-y-4">
         {error ? <ErrorState error={error} onRetry={reload} /> : null}
         {generate.error ? <ErrorState error={generate.error} /> : null}
+        <StageStatus job={job} working={busy} onRetry={() => void generate.run(false)} />
         <EmptyState
           title={t.script.empty}
           hint={t.concepts.subtitle}
           action={
-            <Button loading={generate.pending} icon={<Wand2 className="h-4 w-4" />} onClick={() => void generate.run(false)}>
+            <Button loading={busy} disabled={busy} icon={<Wand2 className="h-4 w-4" />} onClick={() => void generate.run(false)}>
               {t.common.generate}
             </Button>
           }
@@ -198,7 +210,7 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
             />
           </div>
           <div className="flex gap-2">
-            <Button size="sm" variant="secondary" loading={generate.pending} onClick={() => void generate.run(true)}>
+            <Button size="sm" variant="secondary" loading={busy} disabled={busy} onClick={() => void generate.run(true)}>
               {t.common.regenerate}
             </Button>
             <Button
@@ -212,6 +224,8 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
             </Button>
           </div>
         </div>
+
+        <StageStatus job={job} working={busy} onRetry={() => void generate.run(true)} />
 
         <Card>
           <CardTitle

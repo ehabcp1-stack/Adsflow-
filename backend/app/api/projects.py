@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_project
 from app.core.config import settings
-from app.core.db import get_db
+from app.core.db import get_db, time_key
 from app.core.enums import ApprovalEntity, ProjectState
 from app.core.security import get_current_user
 from app.core.state_machine import STAGE_ORDER, STATE_TO_STAGE
@@ -205,7 +205,7 @@ def project_costs(project: Project = Depends(get_project), db: Session = Depends
                 "scene_id": e.scene_id,
                 "created_at": e.created_at.isoformat() if e.created_at else None,
             }
-            for e in sorted(project.cost_entries, key=lambda c: c.created_at or 0, reverse=True)
+            for e in sorted(project.cost_entries, key=lambda c: time_key(c.created_at), reverse=True)
         ],
     }
 
@@ -280,4 +280,4 @@ def archive_project(project: Project = Depends(get_project), db: Session = Depen
 def project_jobs(project: Project = Depends(get_project)) -> Dict[str, Any]:
     from app.services.jobs import job_payload
 
-    return {"items": [job_payload(j) for j in sorted(project.jobs, key=lambda j: j.created_at or 0, reverse=True)]}
+    return {"items": [job_payload(j) for j in sorted(project.jobs, key=lambda j: time_key(j.created_at), reverse=True)]}

@@ -32,7 +32,7 @@ def test_providers_endpoint_reports_mock_mode(client):
     assert any(p["is_mock"] and p["active"] for p in data["providers"])
 
 
-def test_full_journey_end_to_end(client):
+def test_full_journey_end_to_end(client, stage):
     project = client.post(
         f"{API}/projects",
         json={
@@ -57,20 +57,20 @@ def test_full_journey_end_to_end(client):
     assert blocked.status_code == 409
     assert blocked.json()["error"]["code"] == "approval_required"
 
-    analysis = client.post(f"{API}/projects/{pid}/analysis/run").json()
+    analysis = stage(pid, "analysis")
     assert analysis["analysis"]["readiness_score"] >= 0
     assert analysis["analysis"]["director_notes"]
     assert analysis["state"] == "ANALYSIS_READY"
     assert client.post(f"{API}/projects/{pid}/analysis/approve").json()["ok"]
 
-    concepts = client.post(f"{API}/projects/{pid}/concepts/generate").json()
+    concepts = stage(pid, "concepts")
     assert len(concepts["items"]) == 3
     concept_id = concepts["items"][0]["id"]
     refined = client.post(f"{API}/projects/{pid}/concepts/{concept_id}/refine", json={"action": "more_iraqi"}).json()
     assert refined["hook"]
     assert client.post(f"{API}/projects/{pid}/concepts/approve", json={"entity_id": concept_id}).json()["ok"]
 
-    script = client.post(f"{API}/projects/{pid}/script/generate").json()
+    script = stage(pid, "script")
     assert len(script["variants"]) == 3
     selected = next(v for v in script["variants"] if v["variant"] == "primary")
     assert selected["voice_over_text"]
@@ -85,7 +85,7 @@ def test_full_journey_end_to_end(client):
         f"{API}/projects/{pid}/voice/select", json={"voice_profile_id": profile_id, "lock": True}
     ).json()["voice_locked"]
 
-    storyboard = client.post(f"{API}/projects/{pid}/storyboard/generate").json()["storyboard"]
+    storyboard = stage(pid, "storyboard")["storyboard"]
     assert storyboard["scenes"]
     assert storyboard["production_plan"]["scene_count"] == len(storyboard["scenes"])
     assert all(scene["thumbnail_url"] for scene in storyboard["scenes"])
@@ -154,20 +154,20 @@ def test_full_journey_end_to_end(client):
     assert duplicate["state"] == "DRAFT" and duplicate["id"] != pid
 
 
-def test_qc_blocks_export_when_fix_required(client, db, make_project):
+def test_qc_blocks_export_when_fix_required(client, db, make_project, stage):
     from app.models import QCReport
 
     project = make_project(name="فحص", cta="")
     pid = project.id
-    client.post(f"{API}/projects/{pid}/analysis/run")
+    stage(pid, "analysis")
     client.post(f"{API}/projects/{pid}/analysis/approve")
-    client.post(f"{API}/projects/{pid}/concepts/generate")
+    stage(pid, "concepts")
     concepts = client.get(f"{API}/projects/{pid}/concepts").json()
     client.post(f"{API}/projects/{pid}/concepts/approve", json={"entity_id": concepts["items"][0]["id"]})
-    client.post(f"{API}/projects/{pid}/script/generate")
+    stage(pid, "script")
     scripts = client.get(f"{API}/projects/{pid}/script").json()
     client.post(f"{API}/projects/{pid}/script/approve", json={"entity_id": scripts["variants"][0]["id"]})
-    client.post(f"{API}/projects/{pid}/storyboard/generate")
+    stage(pid, "storyboard")
     client.post(f"{API}/projects/{pid}/storyboard/approve")
     client.post(f"{API}/projects/{pid}/production/approve")
     client.post(f"{API}/projects/{pid}/edit/render")
@@ -187,18 +187,18 @@ def test_qc_blocks_export_when_fix_required(client, db, make_project):
     assert report["thresholds"]["approve"] == 90.0
 
 
-def test_budget_guard_blocks_expensive_production(client, make_project):
+def test_budget_guard_blocks_expensive_production(client, make_project, stage):
     project = make_project(name="ميزانية صغيرة", budget_limit_usd=0.01)
     pid = project.id
-    client.post(f"{API}/projects/{pid}/analysis/run")
+    stage(pid, "analysis")
     client.post(f"{API}/projects/{pid}/analysis/approve")
-    client.post(f"{API}/projects/{pid}/concepts/generate")
+    stage(pid, "concepts")
     concepts = client.get(f"{API}/projects/{pid}/concepts").json()
     client.post(f"{API}/projects/{pid}/concepts/approve", json={"entity_id": concepts["items"][0]["id"]})
-    client.post(f"{API}/projects/{pid}/script/generate")
+    stage(pid, "script")
     scripts = client.get(f"{API}/projects/{pid}/script").json()
     client.post(f"{API}/projects/{pid}/script/approve", json={"entity_id": scripts["variants"][0]["id"]})
-    client.post(f"{API}/projects/{pid}/storyboard/generate")
+    stage(pid, "storyboard")
     client.post(f"{API}/projects/{pid}/storyboard/approve")
 
     response = client.post(f"{API}/projects/{pid}/production/approve")

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.db import time_key
 from app.core.enums import (
     ApprovalEntity,
     CostStatus,
@@ -495,7 +496,7 @@ def _handle_music(db: Session, job: GenerationJob) -> Dict[str, Any]:
 # Status & scene review
 # --------------------------------------------------------------------------
 def production_status(db: Session, project: Project) -> Dict[str, Any]:
-    jobs = sorted(project.jobs, key=lambda j: j.created_at or 0)
+    jobs = sorted(project.jobs, key=lambda j: time_key(j.created_at))
     total = len(jobs) or 1
     done = sum(1 for j in jobs if j.status == JobStatus.COMPLETED.value)
     failed = [j for j in jobs if j.status == JobStatus.FAILED.value]

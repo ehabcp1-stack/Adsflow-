@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_project
-from app.core.db import get_db
+from app.core.db import get_db, time_key
 from app.core.enums import ApprovalEntity, ProjectState, WorkflowStage
 from app.core.errors import NotFound
 from app.core.security import get_current_user
@@ -234,7 +234,7 @@ def get_exports(project: Project = Depends(get_project), db: Session = Depends(g
         "ratios": list(export_service.RATIOS.keys()),
         "items": [
             export_service.export_payload(e)
-            for e in sorted(project.exports, key=lambda e: e.created_at or 0, reverse=True)
+            for e in sorted(project.exports, key=lambda e: time_key(e.created_at), reverse=True)
         ],
         "render": editing_service.render_payload(render) if render else None,
         "qc": {"total_score": report.total_score, "verdict": report.verdict, "ready": report.ready_to_export}
