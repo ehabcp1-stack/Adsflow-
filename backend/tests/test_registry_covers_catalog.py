@@ -58,3 +58,37 @@ def test_anthropic_is_the_writer_for_arabic():
     assert {"claude-sonnet-5", "claude-opus-5"} <= {
         spec.model_id for spec in catalog.specs_for_kind("llm") if spec.provider_id == "anthropic"
     }
+
+
+# --------------------------------------------------------------------------
+# Recovering JSON from a reply that is not bare JSON
+# --------------------------------------------------------------------------
+def test_bare_json_passes_through_unchanged():
+    from app.providers.adapters import _first_json_object
+
+    assert _first_json_object('{"a": 1}') == '{"a": 1}'
+
+
+def test_a_fenced_block_is_unwrapped():
+    from app.providers.adapters import _first_json_object
+
+    assert _first_json_object('```json\n{"a": 1}\n```') == '{"a": 1}'
+
+
+def test_a_sentence_before_the_object_is_dropped():
+    from app.providers.adapters import _first_json_object
+
+    assert _first_json_object('Here you go:\n{"a": 1}') == '{"a": 1}'
+
+
+def test_nested_braces_keep_the_outermost_object():
+    from app.providers.adapters import _first_json_object
+
+    assert _first_json_object('{"a": {"b": 2}}') == '{"a": {"b": 2}}'
+
+
+def test_a_reply_with_no_object_is_returned_as_is():
+    """The caller must still see a real parse error, not an empty string."""
+    from app.providers.adapters import _first_json_object
+
+    assert _first_json_object("I cannot do that") == "I cannot do that"

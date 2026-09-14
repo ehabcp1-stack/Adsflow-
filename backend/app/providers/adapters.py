@@ -349,6 +349,28 @@ def _llm_system_prompt(task: str) -> str:
     )
 
 
+def _first_json_object(text: str) -> str:
+    """Recover the JSON object from a reply that may be wrapped.
+
+    Some APIs have a response-format switch; some do not. Where they do not,
+    a model that was asked for bare JSON still occasionally returns it inside
+    a ```json fence or after a sentence. Slicing to the outermost braces costs
+    nothing when the reply is already clean and saves the repair round-trip
+    when it is not. Returns the input unchanged when there is no object in it,
+    so the caller still sees a real parse error rather than a silent empty.
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("```")[1] if "```" in stripped[3:] else stripped[3:]
+        if stripped.lstrip().lower().startswith("json"):
+            stripped = stripped.lstrip()[4:]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return text
+    return stripped[start : end + 1]
+
+
 def _complete_json_with_repair(
     *,
     task: str,
@@ -525,22 +547,18 @@ class AnthropicLLMAdapter(RealAdapterMixin, LLMProvider):
                 "model": model_id,
                 "max_tokens": 4096,
                 "system": _llm_system_prompt(task),
-                "messages": [
-                    {"role": "user", "content": user},
-                    # Prefilling the assistant turn with an opening brace is
-                    # how this API is steered to emit bare JSON: there is no
-                    # response-format switch, and without it the model is free
-                    # to wrap the object in prose the parser would reject.
-                    {"role": "assistant", "content": "{"},
-                ],
+                # No assistant prefill: claude-sonnet-5 rejects it outright
+                # ("This model does not support assistant message prefill"),
+                # so the conversation ends with the user turn and the JSON is
+                # extracted from whatever wrapping the reply arrives in.
+                "messages": [{"role": "user", "content": user}],
             }
             return http.post_json(url, headers=headers, json=body)
 
         def extract_text(raw: Dict[str, Any]) -> str:
             blocks = raw.get("content") or []
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-            # The prefill is not echoed back, so put it back before parsing.
-            return "{" + text
+            return _first_json_object(text)
 
         try:
             ok, payload, raw, errors = _complete_json_with_repair(
