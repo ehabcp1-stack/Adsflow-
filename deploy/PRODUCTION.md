@@ -101,3 +101,27 @@ product is demonstrated without spending anything.
   against the vendor's current documentation before enabling it — every one is
   overridable by an environment variable so no code change is needed.
 - No DNS, TLS or CDN configuration.
+
+---
+
+## Notes from the first real deploy (Railway, September 2026)
+
+Two things made a deploy report success and then answer 502. Both are now
+covered by `backend/tests/test_requirements_complete.py`.
+
+**The driver in `DATABASE_URL` must be the one in the image.** The image ships
+**psycopg 3**, so the URL is `postgresql+psycopg://…`. Written as
+`postgresql+psycopg2://…` SQLAlchemy looks for a package that is not installed
+and every worker dies on import.
+
+**`requirements.txt` must list what `app/` imports.** Pillow, fontTools,
+arabic-reshaper and python-bidi — the whole Arabic caption stack — were used
+but never declared. The suite passed anyway, because a development environment
+had them installed for other reasons. Only a clean image finds this.
+
+### Railway specifics
+
+- Root Directory `backend`, so the Dockerfile there is the one that builds.
+- Set `PORT=8000` to match the Dockerfile's `EXPOSE`, or override the start
+  command to bind `$PORT`.
+- Migrations are still a release step; the web process must not run them.
