@@ -5,9 +5,9 @@
 # how Next builds is not overridden, and there are no custom redirects that
 # would break nested-route refresh.
 #
-# The backend (FastAPI, Postgres, Redis, workers, S3) is NOT hosted here. Until
-# it is publicly deployed the frontend runs in mock mode and stays fully
-# demonstrable — see NEXT_PUBLIC_DEMO_MODE below.
+# The backend (FastAPI, Postgres, object storage, FFmpeg) is NOT hosted here —
+# it runs on Railway. Production reads its URL and its mode from the Netlify
+# UI; previews stay on the bundled snapshot. See [build.environment] below.
 
 [build]
   base = "frontend"
@@ -25,13 +25,16 @@
 
 [build.environment]
   NODE_VERSION = "20"
-  # Mock mode until a public FastAPI URL exists. To go live against the real
-  # backend, set NEXT_PUBLIC_API_BASE_URL in the Netlify UI and flip this to
-  # "false" (see README → Netlify environment variables).
-  NEXT_PUBLIC_DEMO_MODE = "true"
-  NEXT_PUBLIC_APP_ENV = "mock"
+  # NEXT_PUBLIC_DEMO_MODE and NEXT_PUBLIC_APP_ENV are deliberately NOT pinned
+  # here for production. A value in this file WINS over the Netlify UI, so
+  # while they were pinned to mock the production site kept answering from the
+  # bundled snapshot no matter what the UI said — a deploy that looks live and
+  # is not. Production now reads both from the UI, alongside
+  # NEXT_PUBLIC_API_BASE_URL, which is where the backend URL belongs: it
+  # changes when the backend moves, and that should not require a commit.
 
-# Deploy Previews and branch deploys share the same mock configuration.
+# Previews and branch deploys stay on the snapshot on purpose: they must never
+# be able to spend the production budget or write to the production database.
 [context.deploy-preview.environment]
   NEXT_PUBLIC_DEMO_MODE = "true"
   NEXT_PUBLIC_APP_ENV = "mock"
