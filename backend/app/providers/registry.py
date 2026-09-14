@@ -16,6 +16,9 @@ from app.providers.base import BaseProvider
 _REGISTRY: Dict[str, Dict[str, BaseProvider]] = {
     "llm": {
         "mock": M.MockLLMProvider(),
+        # Anthropic first: it is the writer for Iraqi Arabic, and `get_provider`
+        # picks the first available non-mock adapter when none is named.
+        "anthropic": A.AnthropicLLMAdapter(),
         "openai": A.OpenAILLMAdapter(),
         "gemini": A.GeminiLLMAdapter(),
     },

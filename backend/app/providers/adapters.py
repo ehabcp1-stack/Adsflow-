@@ -61,6 +61,9 @@ logger = logging.getLogger(__name__)
 OPENAI_CHAT_COMPLETIONS_PATH = "/chat/completions"
 OPENAI_IMAGES_GENERATIONS_PATH = "/images/generations"
 GEMINI_GENERATE_CONTENT_PATH = "/models/{model}:generateContent"
+ANTHROPIC_MESSAGES_PATH = "/messages"
+#: Anthropic pins behaviour to a dated API version rather than a URL version.
+ANTHROPIC_VERSION = "2023-06-01"
 ELEVENLABS_TTS_PATH = "/text-to-speech/{voice_id}"
 ELEVENLABS_VOICES_PATH = "/voices"
 # Veo (via the Gemini API's long-running-operation pattern): operation name
@@ -476,6 +479,89 @@ class GeminiLLMAdapter(RealAdapterMixin, LLMProvider):
             "prompt_tokens": usage_raw.get("promptTokenCount"),
             "completion_tokens": usage_raw.get("candidatesTokenCount"),
             "total_tokens": usage_raw.get("totalTokenCount"),
+        }
+        catalog.record_success(self.name)
+        return ProviderResult(
+            ok=True, provider=self.name, model=model_id, operation=task, is_mock=False,
+            cost_usd=_cost_for_llm(model_id, usage), latency_ms=latency_ms, data=payload,
+        )
+
+
+class AnthropicLLMAdapter(RealAdapterMixin, LLMProvider):
+    """Claude, for concepts and Iraqi-dialect script writing.
+
+    The catalog has listed claude-sonnet-5 and claude-opus-5 as selectable for
+    some time, but no adapter implemented them: the router would choose
+    ("anthropic", "claude-sonnet-5"), the registry would find nothing under
+    that name, and every call fell back to the Mock — with a real key present
+    and the settings screen reporting production. Scripts kept coming out of a
+    template and nothing anywhere said so.
+    """
+
+    name = "anthropic"
+    key_setting = "ANTHROPIC_API_KEY"
+
+    def capability(self) -> ProviderCapability:
+        return _build_capability(self.name, "llm", self.key_setting)
+
+    def complete_json(self, *, task: str, context: Dict[str, Any], model: Optional[str] = None) -> ProviderResult:
+        if not self.available():
+            return self._unavailable(task)
+        spec = _select_spec(self.name, "llm", model)
+        model_id = model or catalog.configured_model_id(spec)
+        url = f"{settings.ANTHROPIC_BASE_URL}{ANTHROPIC_MESSAGES_PATH}"
+        headers = {
+            "x-api-key": self._api_key() or "",
+            "anthropic-version": ANTHROPIC_VERSION,
+            "Content-Type": "application/json",
+        }
+        started = time.time()
+
+        def make_request(repair_instruction: Optional[str]) -> Dict[str, Any]:
+            user = "INPUT:\n" + json.dumps(context, ensure_ascii=False, default=str)
+            if repair_instruction:
+                user += "\n\n" + repair_instruction
+            body = {
+                "model": model_id,
+                "max_tokens": 4096,
+                "system": _llm_system_prompt(task),
+                "messages": [
+                    {"role": "user", "content": user},
+                    # Prefilling the assistant turn with an opening brace is
+                    # how this API is steered to emit bare JSON: there is no
+                    # response-format switch, and without it the model is free
+                    # to wrap the object in prose the parser would reject.
+                    {"role": "assistant", "content": "{"},
+                ],
+            }
+            return http.post_json(url, headers=headers, json=body)
+
+        def extract_text(raw: Dict[str, Any]) -> str:
+            blocks = raw.get("content") or []
+            text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+            # The prefill is not echoed back, so put it back before parsing.
+            return "{" + text
+
+        try:
+            ok, payload, raw, errors = _complete_json_with_repair(
+                task=task, make_request=make_request, extract_text=extract_text
+            )
+        except http.ProviderHttpError as exc:
+            return self._error_result(task, model_id, str(exc))
+
+        latency_ms = int((time.time() - started) * 1000)
+        if not ok:
+            error = (
+                "model returned invalid structured output after one repair attempt: "
+                f"{'; '.join(errors) or 'unknown error'}"
+            )
+            return self._error_result(task, model_id, error)
+
+        usage_raw = (raw or {}).get("usage") or {}
+        usage = {
+            "prompt_tokens": usage_raw.get("input_tokens"),
+            "completion_tokens": usage_raw.get("output_tokens"),
+            "total_tokens": (usage_raw.get("input_tokens") or 0) + (usage_raw.get("output_tokens") or 0),
         }
         catalog.record_success(self.name)
         return ProviderResult(
