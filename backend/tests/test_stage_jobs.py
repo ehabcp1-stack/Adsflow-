@@ -442,3 +442,59 @@ def test_fit_reads_the_limit_from_the_column_so_the_two_cannot_drift():
     assert len(fit(ProjectAnalysis, "recommended_angle", "x" * (limit + 50))) == limit
     assert fit(ProjectAnalysis, "recommended_angle", None, "emotional") == "emotional"
     assert fit(ProjectAnalysis, "recommended_angle", "   ", "emotional") == "emotional"
+
+
+# --------------------------------------------------------------------------
+# The production screen reports production, not the project's whole history
+# --------------------------------------------------------------------------
+def test_production_status_ignores_the_writing_stages(client, db, make_project, stage):
+    """A project that has not produced a frame must not report failures.
+
+    Live: eleven jobs on the project — five completed writing stages, five
+    analysis attempts killed by deploys, one cancelled — and the production
+    screen counted all of them. It showed "5/11" and five red cards on a
+    project whose production had never been started, which read exactly like a
+    montage that had failed halfway.
+    """
+    from app.services.production import PRODUCTION_JOB_TYPES, production_status
+
+    project = make_project(name="ما بدأ الإنتاج")
+    pid = project.id
+    stage(pid, "analysis")
+    client.post(f"{API}/projects/{pid}/analysis/approve")
+    stage(pid, "concepts")
+    concepts = client.get(f"{API}/projects/{pid}/concepts").json()
+    client.post(f"{API}/projects/{pid}/concepts/approve", json={"entity_id": concepts["items"][0]["id"]})
+    stage(pid, "script")
+    scripts = client.get(f"{API}/projects/{pid}/script").json()
+    client.post(f"{API}/projects/{pid}/script/approve", json={"entity_id": scripts["variants"][0]["id"]})
+    stage(pid, "storyboard")
+    client.post(f"{API}/projects/{pid}/storyboard/approve")
+
+    # Four writing jobs exist and all finished; none of them is production.
+    db.expire_all()
+    fresh = db.get(Project, pid)
+    assert len(fresh.jobs) >= 4
+    status = production_status(db, fresh)
+
+    assert status["started"] is False
+    assert status["jobs_total"] == 0
+    assert status["jobs_failed"] == 0
+    assert status["all_done"] is False, "an unstarted production must not look finished"
+    assert all(j["type"] in PRODUCTION_JOB_TYPES for j in status["jobs"])
+
+
+def test_an_interrupted_analysis_is_not_reported_as_a_production_failure(db, make_project):
+    """The specific misreading: a dead writing job shown as a red card here."""
+    from app.core.enums import JobType
+    from app.services.production import production_status
+
+    project = make_project(name="تحليل منقطع")
+    dead = jobs_service.create_job(db, project=project, job_type=JobType.ANALYSIS.value)
+    dead.status = "failed"
+    dead.error_message = "The server restarted while this was running."
+    db.commit()
+
+    status = production_status(db, project)
+    assert status["jobs_failed"] == 0
+    assert status["jobs"] == []

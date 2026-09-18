@@ -495,8 +495,32 @@ def _handle_music(db: Session, job: GenerationJob) -> Dict[str, Any]:
 # --------------------------------------------------------------------------
 # Status & scene review
 # --------------------------------------------------------------------------
+#: What the production screen is about: the jobs a production run creates.
+#: The writing stages are jobs too, and counting them here is what made a
+#: project that had not produced a single frame report "5 of 11 tasks" with
+#: five red cards — those were analysis attempts interrupted by earlier
+#: deploys, shown to the user as though his montage had failed. A screen that
+#: reports another stage's history as this stage's failures is worse than one
+#: that reports nothing.
+PRODUCTION_JOB_TYPES = {
+    JobType.IMAGE_GENERATION.value,
+    JobType.KEYFRAME_GENERATION.value,
+    JobType.VIDEO_GENERATION.value,
+    JobType.VOICE_GENERATION.value,
+    JobType.MUSIC_GENERATION.value,
+    JobType.VIDEO_TRANSFORM.value,
+    JobType.PHOTO_MOTION.value,
+    JobType.CAPTION_RENDER.value,
+    JobType.FINAL_RENDER.value,
+    JobType.QC_CHECK.value,
+}
+
+
 def production_status(db: Session, project: Project) -> Dict[str, Any]:
-    jobs = sorted(project.jobs, key=lambda j: time_key(j.created_at))
+    jobs = sorted(
+        (j for j in project.jobs if j.job_type in PRODUCTION_JOB_TYPES),
+        key=lambda j: time_key(j.created_at),
+    )
     total = len(jobs) or 1
     done = sum(1 for j in jobs if j.status == JobStatus.COMPLETED.value)
     failed = [j for j in jobs if j.status == JobStatus.FAILED.value]
@@ -504,6 +528,9 @@ def production_status(db: Session, project: Project) -> Dict[str, Any]:
     scenes = sorted(storyboard.scenes, key=lambda s: s.scene_number) if storyboard else []
     return {
         "state": project.state,
+        # Explicit, so the screen can say "not started yet" instead of drawing
+        # an empty progress bar and letting the user read it as a stall.
+        "started": bool(jobs),
         "jobs_total": len(jobs),
         "jobs_completed": done,
         "jobs_failed": len(failed),
