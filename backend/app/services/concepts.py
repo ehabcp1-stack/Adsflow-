@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.core.errors import NotFound
+from app.core.db import fit
 from app.models import Concept, Project, ProjectAnalysis
 from app.providers.registry import get_llm
 from app.services.analysis import _brief_dict
@@ -56,12 +57,12 @@ def generate_concepts(db: Session, project: Project, *, regenerate: bool = False
             version=version,
             name=item["name"],
             name_en=item.get("name_en", ""),
-            angle=item["angle"],
+            angle=fit(Concept, "angle", item.get("angle"), "emotional"),
             one_line_idea=item.get("one_line_idea", ""),
             hook=item.get("hook", ""),
             creative_direction=item.get("creative_direction", ""),
-            recommended_mode=item.get("recommended_mode", "hybrid_reel"),
-            recommended_voice=item.get("recommended_voice", "iraqi_professional"),
+            recommended_mode=fit(Concept, "recommended_mode", item.get("recommended_mode"), "hybrid_reel"),
+            recommended_voice=fit(Concept, "recommended_voice", item.get("recommended_voice"), "iraqi_professional"),
             visual_style=item.get("visual_style", ""),
             cta_style=item.get("cta_style", ""),
             estimated_cost_usd=round(

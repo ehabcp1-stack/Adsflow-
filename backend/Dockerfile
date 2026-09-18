@@ -71,5 +71,12 @@ HEALTHCHECK --interval=20s --timeout=5s --start-period=25s --retries=3 \
 # Migrations are NOT run here — a web instance that migrates on boot will race
 # every other instance in a rolling deploy. Run them as a release step:
 #   docker run --rm <image> alembic upgrade head
+# One worker, deliberately. `JOB_BACKEND=inline` puts the job queue in a
+# thread pool *inside* this process, so a second worker is a second, separate
+# queue: a job dispatched by one process is invisible to the other, and the
+# startup reaper in either one marks the other's live jobs as interrupted.
+# Confirmed live — the thread dump found four distinct process signatures, and
+# the job a user was waiting on belonged to whichever worker had taken the
+# POST. Scale with replicas plus JOB_BACKEND=celery, never with --workers.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*", "--workers", "2"]
+     "--proxy-headers", "--forwarded-allow-ips", "*", "--workers", "1"]

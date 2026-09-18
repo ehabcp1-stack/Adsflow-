@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.db import fit
 from app.core.enums import ProductionMode, QualityLevel
 from app.models import Asset, Project, ProjectAnalysis
 from app.providers.model_router import model_candidates
@@ -538,10 +539,14 @@ def run_analysis(db: Session, project: Project, *, version: Optional[int] = None
         asset_analysis=assets_summary,
         creative_strategy=strategy,
         production_recommendation=cost_plan,
-        recommended_mode=mode,
+        # Clamped: these three are bounded columns filled from model output,
+        # and an Arabic angle longer than the column is ordinary, not an error.
+        recommended_mode=fit(ProjectAnalysis, "recommended_mode", mode, "hybrid_reel"),
         recommended_duration_sec=project.duration_sec,
-        recommended_angle=strategy.get("recommended_angle", "emotional"),
-        recommended_voice_style=strategy.get("recommended_voice_style", "iraqi_professional"),
+        recommended_angle=fit(ProjectAnalysis, "recommended_angle",
+                              strategy.get("recommended_angle"), "emotional"),
+        recommended_voice_style=fit(ProjectAnalysis, "recommended_voice_style",
+                                    strategy.get("recommended_voice_style"), "iraqi_professional"),
         estimated_cost_usd=cost_plan["estimated_total_usd"],
         readiness_score=readiness,
         confidence_score=confidence,

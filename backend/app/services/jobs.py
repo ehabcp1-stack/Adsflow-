@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,8 @@ from app.core.config import settings
 from app.core.db import SessionLocal, utcnow
 from app.core.enums import JobStatus
 from app.models import GenerationJob, Project
+
+logger = logging.getLogger("adflow.services.jobs")
 
 JobHandler = Callable[[Session, GenerationJob], Dict[str, Any]]
 _HANDLERS: Dict[str, JobHandler] = {}
@@ -208,8 +211,11 @@ def _run_inline(job_id: str) -> None:
     db = SessionLocal()
     try:
         execute_job(db, job_id)
-    except Exception:  # pragma: no cover - defensive
+    except Exception as exc:  # noqa: BLE001 - the last net under the worker
+        # Printing and moving on is what left jobs stuck at RUNNING: the row
+        # is the only thing the UI can see, so it must always be written.
         traceback.print_exc()
+        _record_failure(job_id, exc)
     finally:
         db.close()
 
@@ -264,13 +270,45 @@ def execute_job(db: Session, job_id: str) -> None:
         job.status = JobStatus.COMPLETED.value
         job.progress = 1.0
         job.progress_label = "completed"
+        job.finished_at = utcnow()
+        db.commit()
     except Exception as exc:  # noqa: BLE001 - surfaced to the UI as a friendly state
+        _record_failure(job_id, exc)
+
+
+def _record_failure(job_id: str, exc: BaseException) -> None:
+    """Write FAILED on a session that is guaranteed to work.
+
+    The old version set the fields on the handler's own session and committed
+    in a `finally`. That is fine for a provider error and useless for a
+    database one: a failed flush leaves the Session in PendingRollbackError,
+    so the commit meant to record the failure raises too, `_run_inline` prints
+    the traceback to stderr and the worker thread goes back to the pool —
+    leaving the row saying RUNNING with nothing running it, for ever.
+
+    Exactly that happened live. A model-written Arabic angle was longer than
+    its `varchar(40)` column, Postgres refused the INSERT, and the analysis
+    job became unkillable and unrepeatable: `find_active_duplicate` handed the
+    dead job back to every retry. Thirty thread dumps across both workers
+    found no thread working on it.
+
+    So the failure is recorded on a *fresh* session that has no poisoned
+    transaction to inherit.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(GenerationJob, job_id)
+        if job is None:  # pragma: no cover - defensive
+            return
         job.status = JobStatus.FAILED.value
         job.error_message = str(exc)[:500]
         job.progress_label = "failed"
-    finally:
         job.finished_at = utcnow()
         db.commit()
+    except Exception:  # noqa: BLE001 - nothing left to try; at least say so
+        logger.exception("could not record failure for job %s", job_id)
+    finally:
+        db.close()
 
 
 def set_progress(db: Session, job: GenerationJob, value: float, label: str) -> None:

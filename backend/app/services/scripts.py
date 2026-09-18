@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import NotFound
 from app.services import script_qa
+from app.core.db import fit
 from app.models import BrandKit, Concept, Project, ScriptVersion
 from app.providers.registry import get_llm
 from app.services.analysis import _brief_dict
@@ -96,7 +97,7 @@ def generate_scripts(db: Session, project: Project, *, regenerate: bool = False)
             voice_over_text=data["voice_over_text"],
             on_screen_text=data["on_screen_text"],
             lines=data["lines"],
-            dialect_preset=data["dialect_preset"],
+            dialect_preset=fit(ScriptVersion, "dialect_preset", data.get("dialect_preset"), "iraqi_professional"),
             total_duration_sec=data["total_duration_sec"],
             word_count=data["word_count"],
             score=qa_report.score,

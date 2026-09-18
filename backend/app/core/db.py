@@ -107,6 +107,35 @@ def time_key(moment: Optional[datetime]) -> datetime:
     return moment
 
 
+def fit(model: type, field: str, value: Any, default: str = "") -> str:
+    """Trim a value to what its column can actually hold.
+
+    Model output goes straight into bounded columns — `ProjectAnalysis.
+    recommended_angle` is `String(40)` and is filled from whatever Claude put
+    in `recommended_angle`. An Arabic marketing angle longer than forty
+    characters is entirely normal, and Postgres refuses the INSERT:
+
+        psycopg.errors.StringDataRightTruncation:
+        value too long for type character varying(40)
+
+    SQLite does not enforce the length, so every test and every mock run passed
+    and only the live database ever objected. Worse, the failure poisons the
+    Session, so the job's own error handling could not record the failure
+    either and the row stayed RUNNING for ever (see `services/jobs.execute_job`).
+
+    The limit is read from the mapped column rather than written out here, so
+    widening a column widens the clamp with it and the two cannot drift.
+    """
+    text = (value if isinstance(value, str) else default if value is None else str(value)).strip()
+    if not text:
+        text = default
+    column = model.__table__.columns[field]
+    limit = getattr(column.type, "length", None)
+    if limit is None or len(text) <= limit:
+        return text
+    return text[:limit].rstrip()
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

@@ -369,3 +369,76 @@ def test_the_two_analysis_model_calls_overlap(db, make_project, monkeypatch):
     project = make_project(name="توازي")
     analysis = analysis_service.run_analysis(db, project)
     assert analysis.brief_interpretation and analysis.creative_strategy
+
+
+# --------------------------------------------------------------------------
+# A database error must not be able to produce a job nobody can finish
+# --------------------------------------------------------------------------
+def test_a_failing_write_still_records_the_job_as_failed(client, db, make_project, no_dispatch, monkeypatch):
+    """The exact shape of the live failure, in miniature.
+
+    A model-written Arabic angle longer than its `varchar(40)` column made
+    Postgres refuse the INSERT. That poisons the Session, so the commit meant
+    to record the failure raised too, and the row stayed RUNNING with nothing
+    running it — unkillable, and unrepeatable because the idempotency check
+    handed the dead job back to every retry. The failure must be recorded on a
+    session that cannot have inherited the broken transaction.
+    """
+    project = make_project(name="فشل بالكتابة")
+    pid = project.id
+    job_id = client.post(f"{API}/projects/{pid}/analysis/run").json()["job"]["id"]
+
+    from app.services import stage_jobs
+
+    def _poison(*args, **kwargs):
+        raise RuntimeError("value too long for type character varying(40)")
+
+    monkeypatch.setattr(stage_jobs, "run_analysis", _poison)
+    jobs_service.execute_job(db, job_id)
+
+    payload = client.get(f"{API}/projects/{pid}/analysis").json()
+    assert payload["job"]["status"] == "failed", "the job was left claiming to run"
+    assert "varying(40)" in payload["job"]["error_message"]
+
+
+def test_a_model_answer_longer_than_its_column_is_stored_not_dropped(db, make_project, monkeypatch):
+    """`fit` trims to the column instead of letting the INSERT fail.
+
+    SQLite does not enforce the length, so this asserts the clamp itself
+    rather than relying on the database to complain — which is precisely why
+    the bug reached production with a green suite.
+    """
+    from app.core.db import fit
+    from app.models import ProjectAnalysis
+    from app.services import analysis as analysis_service
+
+    long_angle = "الأمان العائلي والخصوصية والموقع القريب من المدارس والخدمات الأساسية"
+    assert len(long_angle) > 40
+
+    real = analysis_service.get_llm()
+
+    class _Verbose:
+        def complete_json(self, *, task, context):
+            result = real.complete_json(task=task, context=context)
+            if task == "creative_strategy":
+                result.data["recommended_angle"] = long_angle
+            return result
+
+    monkeypatch.setattr(analysis_service, "get_llm", lambda *a, **k: _Verbose())
+    project = make_project(name="زاوية طويلة")
+    analysis = analysis_service.run_analysis(db, project)
+
+    limit = ProjectAnalysis.__table__.columns["recommended_angle"].type.length
+    assert len(analysis.recommended_angle) <= limit
+    assert analysis.recommended_angle == fit(ProjectAnalysis, "recommended_angle", long_angle)
+    assert analysis.recommended_angle  # trimmed, not blanked
+
+
+def test_fit_reads_the_limit_from_the_column_so_the_two_cannot_drift():
+    from app.core.db import fit
+    from app.models import ProjectAnalysis
+
+    limit = ProjectAnalysis.__table__.columns["recommended_angle"].type.length
+    assert len(fit(ProjectAnalysis, "recommended_angle", "x" * (limit + 50))) == limit
+    assert fit(ProjectAnalysis, "recommended_angle", None, "emotional") == "emotional"
+    assert fit(ProjectAnalysis, "recommended_angle", "   ", "emotional") == "emotional"
