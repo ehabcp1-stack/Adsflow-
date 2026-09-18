@@ -281,14 +281,15 @@ def test_a_job_orphaned_by_a_restart_is_failed_at_startup(client, db, make_proje
     moved it, and the screen polled it forever.
     """
     project = make_project(name="انقطع السيرفر")
-    job_id = client.post(f"{API}/projects/{project.id}/analysis/run").json()["job"]["id"]
+    pid = project.id
+    job_id = client.post(f"{API}/projects/{pid}/analysis/run").json()["job"]["id"]
     _age_job(db, job_id, seconds=5)  # young, but the process is restarting
 
-    # Counts the whole table, so assert on this job rather than the total —
-    # other tests in the suite leave running jobs behind too.
-    assert jobs_service.reap_stale_jobs(db, all_running=True) >= 1
+    # Scoped to this project: the suite runs real background jobs for other
+    # projects, and a test that reaped the whole table would fail them.
+    assert jobs_service.reap_stale_jobs(db, all_running=True, project_id=pid) == 1
 
-    payload = client.get(f"{API}/projects/{project.id}/analysis").json()
+    payload = client.get(f"{API}/projects/{pid}/analysis").json()
     assert payload["job"]["status"] == "failed"
     assert "restarted" in payload["job"]["error_message"]
 

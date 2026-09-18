@@ -100,7 +100,7 @@ def is_stale(job: GenerationJob) -> bool:
     return (utcnow() - started).total_seconds() > settings.JOB_STALE_AFTER_SEC
 
 
-def reap_stale_jobs(db: Session, *, all_running: bool = False) -> int:
+def reap_stale_jobs(db: Session, *, all_running: bool = False, project_id: Optional[str] = None) -> int:
     """Fail jobs that nothing is working on any more, and say why.
 
     Called at startup with `all_running=True`: with the inline backend the
@@ -112,7 +112,12 @@ def reap_stale_jobs(db: Session, *, all_running: bool = False) -> int:
     The alternative — leaving them — is the worst of both: the screen polls a
     job that will never move, and the user cannot start a new one.
     """
-    running = db.query(GenerationJob).filter(GenerationJob.status == JobStatus.RUNNING.value).all()
+    query = db.query(GenerationJob).filter(GenerationJob.status == JobStatus.RUNNING.value)
+    if project_id is not None:
+        # Scoped so that clearing one project's dead job cannot touch another's
+        # live one. Startup is the only caller that wants the whole table.
+        query = query.filter(GenerationJob.project_id == project_id)
+    running = query.all()
     dead = [job for job in running if all_running or is_stale(job)]
     for job in dead:
         job.status = JobStatus.FAILED.value
@@ -149,7 +154,7 @@ def find_active_duplicate(db: Session, *, project_id: str, job_type: str,
         if (job.payload or {}).get("_idempotency_key") != key or job.scene_id != scene_id:
             continue
         if is_stale(job):
-            reap_stale_jobs(db)
+            reap_stale_jobs(db, project_id=project_id)
             continue
         return job
     return None

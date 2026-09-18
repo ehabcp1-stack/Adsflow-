@@ -70,8 +70,18 @@ def start_analysis(db: Session, project: Project) -> GenerationJob:
 @register_handler(JobType.ANALYSIS.value)
 def _handle_analysis(db: Session, job: GenerationJob) -> Dict[str, Any]:
     project = _project(db, job)
-    set_progress(db, job, 0.15, "understanding the brief")
-    analysis = run_analysis(db, project)
+    set_progress(db, job, 0.05, "reading the brief")
+
+    # The label used to be set once, before any work, and never moved until
+    # the stage was over. So a job spending minutes fetching assets displayed
+    # "understanding the brief" throughout — the screen was not slow, it was
+    # wrong about what it was doing, which is why "it never finishes" was the
+    # only thing left to say about it.
+    def _measuring(done: int, total: int, kind: str) -> None:
+        share = done / total if total else 1.0
+        set_progress(db, job, 0.05 + 0.45 * share, f"measuring your media ({done}/{total})")
+
+    analysis = run_analysis(db, project, on_progress=_measuring)
     set_progress(db, job, 0.9, "writing the report")
     _advance(
         db, project, when=(ProjectState.ANALYZING.value,),

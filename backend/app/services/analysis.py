@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.enums import ProductionMode, QualityLevel
 from app.models import Asset, Project, ProjectAnalysis
 from app.providers.model_router import model_candidates
@@ -209,14 +211,49 @@ def analyze_video(asset: Asset) -> Dict[str, Any]:
     }
 
 
-def analyze_assets(db: Session, project: Project) -> Dict[str, Any]:
+def analyze_assets(db: Session, project: Project, *, on_progress=None) -> Dict[str, Any]:
+    """Measure every asset, under a whole-batch clock.
+
+    Each measurement fetches the object from storage first, and that fetch
+    used botocore's defaults: 60s connect, 60s read, five attempts — five
+    minutes per object, with nothing above it counting. Twelve assets is an
+    hour, and `media_bridge._materialize_remote` swallows the failure and
+    returns None, so the stage does not fail either. It simply sits at
+    "understanding the brief", which is the label set before any of this runs.
+    That is what a user saw as "the analysis never finishes".
+
+    The client is bounded now (see `S3Storage`), and this is the second bound:
+    once the batch budget is gone the rest are reported as not measured, which
+    is true and visible, instead of the stage staying open.
+    """
+    started = time.monotonic()
+    deadline = started + settings.ASSET_ANALYSIS_BUDGET_SEC
+    skipped = 0
+
     assets: List[Asset] = db.query(Asset).filter(Asset.project_id == project.id).all()
     images = [a for a in assets if a.kind in ("image", "reference", "logo")]
     videos = [a for a in assets if a.kind == "video"]
+    total = len(images) + len(videos)
+    done = 0
+
+    def _note(asset: Asset) -> None:
+        """Tell the caller where we are, so the screen can stop guessing."""
+        nonlocal done
+        done += 1
+        if on_progress:
+            on_progress(done, total, asset.kind)
 
     per_asset: List[Dict[str, Any]] = []
     for asset in images:
+        if time.monotonic() > deadline:
+            skipped += 1
+            result = _unmeasured_image_result(asset, error="asset measurement ran out of time")
+            asset.analysis = result
+            asset.usable = False
+            per_asset.append({"asset_id": asset.id, "kind": asset.kind, **result})
+            continue
         result = analyze_image(asset)
+        _note(asset)
         asset.analysis = result
         asset.quality_score = result["quality_score"]
         asset.hero_potential = result["hero_potential"]
@@ -225,7 +262,15 @@ def analyze_assets(db: Session, project: Project) -> Dict[str, Any]:
         asset.suggested_use = result["suggested_use"]
         per_asset.append({"asset_id": asset.id, "kind": asset.kind, **result})
     for asset in videos:
+        if time.monotonic() > deadline:
+            skipped += 1
+            result = _unmeasured_video_result(asset, error="asset measurement ran out of time")
+            asset.analysis = result
+            asset.usable = False
+            per_asset.append({"asset_id": asset.id, "kind": "video", **result})
+            continue
         result = analyze_video(asset)
+        _note(asset)
         asset.analysis = result
         asset.quality_score = result["quality"]
         asset.usable = result["usable"]
@@ -253,7 +298,14 @@ def analyze_assets(db: Session, project: Project) -> Dict[str, Any]:
         key = a.orientation or "unknown"
         orientation_mix[key] = orientation_mix.get(key, 0) + 1
 
+    if skipped:
+        log.warning(
+            "asset measurement budget (%ss) spent on project %s: %s asset(s) not measured",
+            settings.ASSET_ANALYSIS_BUDGET_SEC, project.id, skipped,
+        )
     return {
+        "measurement_secs": round(time.monotonic() - started, 1),
+        "unmeasured_count": skipped,
         "image_count": len(images),
         "video_count": len(videos),
         "usable_image_count": len(usable_images),
@@ -358,7 +410,8 @@ def estimate_project_cost(project: Project, assets_summary: Dict[str, Any], mode
     }
 
 
-def run_analysis(db: Session, project: Project, *, version: Optional[int] = None) -> ProjectAnalysis:
+def run_analysis(db: Session, project: Project, *, version: Optional[int] = None,
+                 on_progress=None) -> ProjectAnalysis:
     """Produce one analysis report. Two model calls, run side by side.
 
     They used to run one after the other, which made the stage cost the sum of
@@ -375,7 +428,7 @@ def run_analysis(db: Session, project: Project, *, version: Optional[int] = None
     llm = get_llm()
     brief = _brief_dict(project)
 
-    assets_summary = analyze_assets(db, project)
+    assets_summary = analyze_assets(db, project, on_progress=on_progress)
 
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="adflow-analysis") as pool:
         brief_call = pool.submit(

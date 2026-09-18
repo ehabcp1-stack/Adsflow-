@@ -32,7 +32,15 @@ DISTRIBUTION = {
 
 #: Packages that arrive as a dependency of something declared, and are imported
 #: directly. Kept explicit so the list is a decision, not an accident.
-TRANSITIVE_BUT_USED = {"starlette", "anyio"}
+TRANSITIVE_BUT_USED = {
+    "starlette",
+    "anyio",
+    # boto3's own dependency, pinned by it. `storage.py` imports
+    # `botocore.config.Config` directly to bound S3 timeouts and retries —
+    # botocore's defaults are 60s/60s with five attempts, which is five
+    # minutes per object and was the whole of "the analysis never finishes".
+    "botocore",
+}
 
 LOCAL = {"app", "scripts", "tests", "alembic"}
 

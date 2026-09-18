@@ -97,6 +97,17 @@ class Settings(BaseSettings):
     #: 79ms, so the model call was the whole of it.
     LLM_TOTAL_BUDGET_SEC: float = 150.0
 
+    #: Object-storage fetches. botocore defaults to 60s/60s with five attempts,
+    #: which is five minutes per object and unbounded across a batch.
+    S3_CONNECT_TIMEOUT_SEC: float = 10.0
+    S3_READ_TIMEOUT_SEC: float = 30.0
+    S3_MAX_ATTEMPTS: int = 3
+
+    #: Whole-batch ceiling for measuring a project's assets. Past it the
+    #: remaining assets are reported honestly as not measured rather than
+    #: holding the stage open indefinitely.
+    ASSET_ANALYSIS_BUDGET_SEC: float = 120.0
+
     #: How long a job may claim to be RUNNING before it is treated as dead.
     #: Above the provider HTTP ceiling (3 attempts x PROVIDER_TIMEOUT_SEC plus
     #: backoff, ~6 minutes) so a slow-but-alive job is never reaped, and well

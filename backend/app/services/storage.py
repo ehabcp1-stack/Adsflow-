@@ -58,14 +58,27 @@ class LocalStorage:
 class S3Storage:  # pragma: no cover - requires credentials
     def __init__(self) -> None:
         import boto3
+        from botocore.config import Config
 
         self.bucket = settings.S3_BUCKET
+        # botocore's defaults are 60s connect + 60s read with up to five
+        # attempts: about five minutes per object, and this client is called
+        # once per asset with nothing above it holding a clock. Twelve assets
+        # is an hour of a job sitting at "understanding the brief" with no
+        # error, because `media_bridge._materialize_remote` swallows the
+        # failure and returns None. Media fetches are bounded here so that a
+        # slow bucket degrades one asset instead of the whole stage.
         self.client = boto3.client(
             "s3",
             endpoint_url=settings.S3_ENDPOINT_URL,
             aws_access_key_id=settings.S3_ACCESS_KEY,
             aws_secret_access_key=settings.S3_SECRET_KEY,
             region_name=settings.S3_REGION,
+            config=Config(
+                connect_timeout=settings.S3_CONNECT_TIMEOUT_SEC,
+                read_timeout=settings.S3_READ_TIMEOUT_SEC,
+                retries={"max_attempts": settings.S3_MAX_ATTEMPTS, "mode": "standard"},
+            ),
         )
 
     def put_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
