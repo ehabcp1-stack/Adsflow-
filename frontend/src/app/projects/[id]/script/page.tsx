@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 import { DirectorHint } from '@/components/AIDirector';
+import { DialectCheck } from '@/components/DialectCheck';
 import { ProjectFrame } from '@/components/ProjectFrame';
 import { StageStatus } from '@/components/StageStatus';
 import {
@@ -22,8 +23,9 @@ import {
 } from '@/components/ui';
 import { useLocale } from '@/i18n/LocaleProvider';
 import { api } from '@/lib/api';
+import { segmentsFor, type ScriptEdit } from '@/lib/dialect';
 import { useApi, useMutation, useStageJob, type StageJob } from '@/lib/hooks';
-import type { ProjectDetail, ScriptLine, ScriptVersion } from '@/lib/types';
+import type { DialectFlag, ProjectDetail, ScriptLine, ScriptVersion } from '@/lib/types';
 
 type ScriptPayload = {
   variants: ScriptVersion[];
@@ -117,13 +119,32 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
   const [variant, setVariant] = useState<'primary' | 'more_sales' | 'more_emotional'>('primary');
   const [editing, setEditing] = useState(false);
   const [lines, setLines] = useState<ScriptLine[]>([]);
+  // The dialect flags are edited alongside the lines rather than re-read from
+  // `current`: each swap moves the words after it, and the panel has to keep
+  // pointing at the right characters until the whole set is saved.
+  const [flags, setFlags] = useState<DialectFlag[]>([]);
+  const [dirty, setDirty] = useState(false);
   const [ctaDraft, setCtaDraft] = useState('');
 
   const current = data?.variants.find((script) => script.variant === variant) ?? data?.variants[0] ?? null;
 
   useEffect(() => {
-    if (current) setLines(current.lines);
+    if (!current) return;
+    setLines(current.lines);
+    setFlags(current.dialect_flags ?? []);
+    setDirty(false);
   }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const editLines = (next: ScriptLine[]) => {
+    setLines(next);
+    setDirty(true);
+  };
+
+  const applyDialectEdit = (edit: ScriptEdit) => {
+    setLines(edit.lines);
+    setFlags(edit.flags);
+    setDirty(true);
+  };
 
   // Queues the work and returns at once; `setData` carries the queued job,
   // which is what turns the polling on.
@@ -151,6 +172,7 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
     if (!current) return;
     await api.patch(`/projects/${project.id}/script/${current.id}`, { lines });
     setEditing(false);
+    setDirty(false);
     reload();
     reloadProject();
   });
@@ -271,11 +293,30 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
                     onChange={(event) => {
                       const next = [...lines];
                       next[index] = { ...line, voice_line: event.target.value };
-                      setLines(next);
+                      editLines(next);
                     }}
                   />
                 ) : (
-                  <p className="text-[16px] leading-relaxed text-ink">{line.voice_line}</p>
+                  <p className="text-[16px] leading-relaxed text-ink">
+                    {/* Marked in place, not only listed in the panel: a word
+                        reads wrong inside its sentence, not in a table. */}
+                    {segmentsFor(
+                      line.voice_line,
+                      flags.filter((flag) => flag.line_index === index),
+                    ).map((segment, position) =>
+                      segment.flag ? (
+                        <mark
+                          key={position}
+                          title={locale === 'ar' ? segment.flag.reason_ar : segment.flag.reason_en}
+                          className="rounded bg-warn/20 px-0.5 text-ink decoration-warn decoration-wavy underline-offset-4 [text-decoration-line:underline]"
+                        >
+                          {segment.text}
+                        </mark>
+                      ) : (
+                        <span key={position}>{segment.text}</span>
+                      ),
+                    )}
+                  </p>
                 )}
 
                 <p className="mt-2 flex items-center gap-1.5 text-[12.5px] text-ink-muted">
@@ -333,6 +374,16 @@ function ScriptView({ project, reloadProject }: { project: ProjectDetail; reload
       </div>
 
       <aside className="space-y-4">
+        <DialectCheck
+          lines={lines}
+          flags={flags}
+          dirty={dirty}
+          saving={saveEdits.pending}
+          saveError={saveEdits.error}
+          onChange={applyDialectEdit}
+          onSave={() => void saveEdits.run()}
+        />
+
         <Card>
           <CardTitle>{t.wizard.dialect}</CardTitle>
           <p className="text-[14px] font-medium text-ink">

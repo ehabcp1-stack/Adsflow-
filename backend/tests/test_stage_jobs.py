@@ -498,3 +498,43 @@ def test_an_interrupted_analysis_is_not_reported_as_a_production_failure(db, mak
     status = production_status(db, project)
     assert status["jobs_failed"] == 0
     assert status["jobs"] == []
+
+
+def test_a_finished_job_is_never_reported_beside_a_stale_state(db, make_project):
+    """The payload may not be older than the job status it carries.
+
+    A stage GET used to read the project row first and the job row second.
+    pysqlite runs each SELECT on its own, so the two reads can straddle the
+    worker's commit: the response says `completed` and still carries the state
+    from before the job ran. The client stops polling on `completed`, so the
+    user is left on a screen that never advances — intermittently, and only
+    for the job actually being watched. It surfaced as one flaky run of the
+    end-to-end journey in a hundred, which is exactly how this class of bug
+    announces itself.
+    """
+    from app.core.db import SessionLocal
+    from app.core.enums import JobType, ProjectState
+    from app.models import Project
+    from app.services import stage_jobs
+
+    project = make_project(name="حالة بايتة")
+    job = jobs_service.create_job(db, project=project, job_type=JobType.ANALYSIS.value)
+    db.commit()
+
+    # This session has the project loaded and cached, exactly as the request
+    # does after `get_project`.
+    assert project.state == ProjectState.DRAFT.value
+
+    worker = SessionLocal()
+    try:
+        theirs = worker.get(Project, project.id)
+        theirs.state = ProjectState.ANALYSIS_READY.value
+        worker.commit()
+    finally:
+        worker.close()
+
+    stage_jobs.latest_job(db, project, JobType.ANALYSIS.value)
+    assert project.state == ProjectState.ANALYSIS_READY.value, (
+        "reading the job must leave the rest of the payload no older than it"
+    )
+    assert job.id

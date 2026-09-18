@@ -128,6 +128,27 @@ export type ScriptLine = {
   end: number;
 };
 
+/**
+ * One word the dialect layer does not think is Iraqi.
+ *
+ * `start`/`end` are character offsets into that line's `voice_line`, measured
+ * by the backend. The screen replaces by those offsets rather than searching
+ * for the word again here: Arabic word boundaries need a lookbehind Safari
+ * only learned in 16.4, and a second implementation would be free to disagree
+ * with the one that produced the flag.
+ */
+export type DialectFlag = {
+  line_index: number;
+  found: string;
+  /** Empty means the right repair is to delete the word, not swap it. */
+  suggest: string;
+  kind: 'gulf' | 'msa' | 'forbidden';
+  reason_ar: string;
+  reason_en: string;
+  start: number;
+  end: number;
+};
+
 export type ScriptVersion = {
   id: string;
   version: number;
@@ -145,6 +166,7 @@ export type ScriptVersion = {
   critic_notes: string[];
   is_selected: boolean;
   concept_id: string | null;
+  dialect_flags?: DialectFlag[];
 };
 
 export type VoiceProfile = {

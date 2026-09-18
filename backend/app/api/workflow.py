@@ -61,8 +61,9 @@ def _analysis_payload(analysis) -> Dict[str, Any]:
 
 @router.get("/analysis")
 def get_analysis(project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
-    analysis = concept_service.latest_analysis(db, project)
+    # The job is read first on purpose — see `stage_jobs.latest_job`.
     job = stage_jobs.latest_job(db, project, JobType.ANALYSIS.value)
+    analysis = concept_service.latest_analysis(db, project)
     return {
         "steps": ANALYSIS_STEPS,
         "analysis": _analysis_payload(analysis) if analysis else None,
@@ -123,8 +124,8 @@ def approve_analysis(
 # --------------------------------------------------------------------------
 @router.get("/concepts")
 def get_concepts(project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
-    items = sorted(project.concepts, key=lambda c: (c.is_alternative, -c.score_total))
     job = stage_jobs.latest_job(db, project, JobType.CONCEPTS.value)
+    items = sorted(project.concepts, key=lambda c: (c.is_alternative, -c.score_total))
     return {
         "items": [concept_service.concept_payload(c) for c in items if not c.is_alternative][:3],
         "alternatives": [concept_service.concept_payload(c) for c in items if c.is_alternative],
@@ -194,11 +195,11 @@ def approve_concept(
 # --------------------------------------------------------------------------
 @router.get("/script")
 def get_script(project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
+    job = stage_jobs.latest_job(db, project, JobType.SCRIPT.value)
     scripts = sorted(project.scripts, key=lambda s: (s.variant, -s.version))
     latest_by_variant: Dict[str, Any] = {}
     for script in scripts:
         latest_by_variant.setdefault(script.variant, script)
-    job = stage_jobs.latest_job(db, project, JobType.SCRIPT.value)
     return {
         "variants": [script_service.script_payload(s) for s in latest_by_variant.values()],
         "selected_script_id": project.selected_script_id,
@@ -394,8 +395,8 @@ def select_voice(
 # --------------------------------------------------------------------------
 @router.get("/storyboard")
 def get_storyboard(project: Project = Depends(get_project), db: Session = Depends(get_db)) -> Dict[str, Any]:
-    storyboard = storyboard_service.active_storyboard(db, project)
     job = stage_jobs.latest_job(db, project, JobType.STORYBOARD.value)
+    storyboard = storyboard_service.active_storyboard(db, project)
     return {
         "storyboard": storyboard_service.storyboard_payload(db, storyboard) if storyboard else None,
         "job": job_payload(job) if job else None,

@@ -100,6 +100,22 @@ CTA_VERBS: Tuple[str, ...] = (
 #: Words that carry the hook. A hook that opens with the company name is dead.
 WEAK_HOOK_OPENERS: Tuple[str, ...] = ("شركة", "مجموعة", "نحن", "تأسست", "نقدم لكم")
 
+#: How the dimensions combine into the score the user is shown. Must sum to
+#: 1.0 — see `tests/test_script_qa_weights`.
+QA_WEIGHTS: Dict[str, float] = {
+    "natural_iraqi": 0.12,
+    "gulf_free": 0.12,
+    "msa_free": 0.06,
+    "register": 0.10,
+    "no_pressure": 0.12,
+    "clarity": 0.12,
+    "hook_strength": 0.12,
+    "rhythm": 0.06,
+    "cta_quality": 0.12,
+    "specificity": 0.03,
+    "duration_fit": 0.03,
+}
+
 #: Speaking rate used across the product for duration estimates.
 WORDS_PER_SECOND = 2.3
 
@@ -215,6 +231,24 @@ def review_script(
         ))
 
     # --- unnecessary MSA -------------------------------------------------
+    # Gulf Arabic is the drift that MSA checking cannot see: every word is
+    # colloquial, so nothing here fired, and the script read as another
+    # country's ad. Scored harder than MSA — a stray فصحى word is stiff, a
+    # Gulf word is simply the wrong dialect.
+    from app.services.dialect import GULF_TO_IRAQI, find_non_iraqi
+
+    gulf_hits = [f.found for f in find_non_iraqi(text) if f.kind == "gulf"]
+    dimensions["gulf_free"] = round(max(0.0, 100.0 - len(gulf_hits) * 22.0), 1)
+    if gulf_hits:
+        issues.append(QAIssue(
+            "gulf_not_iraqi", "critical",
+            f"Gulf Arabic, not Iraqi: {', '.join(gulf_hits[:4])}.",
+            f"هذي كلمات خليجية مو عراقية: {'، '.join(gulf_hits[:4])}.",
+            suggestion_ar="بدّلها بالعراقي: " + "، ".join(
+                f"{g}→{GULF_TO_IRAQI[g]}" for g in gulf_hits[:4] if GULF_TO_IRAQI.get(g)
+            ),
+        ))
+
     msa_hits = [m for m in MSA_TO_IRAQI if m in text]
     dimensions["msa_free"] = round(max(0.0, 100.0 - len(msa_hits) * 14.0), 1)
     if msa_hits:
@@ -362,12 +396,13 @@ def review_script(
             "نقصّر الجمل." if longer else "نضيف تفصيل مفيد.",
         ))
 
-    weights = {
-        "natural_iraqi": 0.20, "msa_free": 0.10, "register": 0.10,
-        "no_pressure": 0.12, "clarity": 0.12, "hook_strength": 0.12,
-        "rhythm": 0.06, "cta_quality": 0.12, "specificity": 0.03, "duration_fit": 0.03,
-    }
-    score = round(sum(dimensions.get(k, 80.0) * w for k, w in weights.items()), 1)
+    # The three dialect dimensions still weigh 0.30 between them, exactly as
+    # natural_iraqi + msa_free did before `gulf_free` existed — the budget was
+    # split, not added to. Adding to it silently pushed the maximum score to
+    # 110 and diluted every other dimension; `QA_WEIGHTS` is asserted to sum
+    # to 1.0 by a test, because a weight table is the kind of thing that is
+    # only ever edited in a hurry.
+    score = round(sum(dimensions.get(k, 80.0) * w for k, w in QA_WEIGHTS.items()), 1)
     critical = [i for i in issues if i.severity == "critical"]
 
     return ScriptQAReport(
@@ -413,6 +448,10 @@ def improve_script(
 
     def clean(value: str) -> str:
         result = value or ""
+        if "gulf_not_iraqi" in codes:
+            from app.services.dialect import soften_gulf
+
+            result = soften_gulf(result)
         if "unnecessary_msa" in codes:
             result = soften_msa(result)
         for phrase in forbidden:

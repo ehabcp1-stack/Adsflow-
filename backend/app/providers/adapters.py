@@ -339,14 +339,52 @@ def _ratio_for_aspect(aspect_ratio: str) -> str:
     return {"9:16": "768:1280", "16:9": "1280:768", "1:1": "960:960"}.get(aspect_ratio, "768:1280")
 
 
-def _llm_system_prompt(task: str) -> str:
+#: Tasks whose output a person reads aloud or sees on screen. Only these get
+#: the dialect rules; asking for Iraqi phrasing in a cost estimate is noise.
+_ARABIC_WRITING_TASKS = frozenset({"concepts", "script", "refine", "brief_interpretation", "creative_strategy"})
+
+
+def _llm_system_prompt(task: str, dialect_preset: str = "") -> str:
+    """The instruction the model actually gets.
+
+    This used to be one clause — "Iraqi-Arabic-first" — with nothing saying
+    what Iraqi *is*. A model handed that writes the Gulf Arabic it has far
+    more of, and because every word it produces is colloquial, the output
+    looks compliant: it reads as dialect, just not this one. The user put it
+    plainly — "النص يستخدم الخليجي أكثر من العراقي".
+
+    So the dialect rules are spelled out: the neighbours to avoid by name, the
+    banned Gulf words, their Iraqi replacements, and two lines showing the
+    rhythm. See `services/dialect.iraqi_writing_rules`.
+    """
     schema = schemas.json_schema_for(task)
-    return (
-        "You are AdFlow AI's creative engine, producing Iraqi-Arabic-first real-estate "
+    base = (
+        "You are AdFlow AI's creative engine, producing Iraqi-Arabic real-estate "
         f"advertising content for the structured task '{task}'. Respond with ONLY a single JSON "
         "object — no prose, no markdown fences — matching this JSON Schema exactly: "
         f"{json.dumps(schema, ensure_ascii=False)}"
     )
+    if task not in _ARABIC_WRITING_TASKS:
+        return base
+
+    from app.services.dialect import iraqi_writing_rules
+
+    return base + "\n\n" + iraqi_writing_rules(dialect_preset)
+
+
+def _dialect_of(context: Dict[str, Any]) -> str:
+    """The project's dialect preset, wherever the caller put it in the context."""
+    for key in ("dialect", "dialect_preset"):
+        value = context.get(key)
+        if isinstance(value, str) and value:
+            return value
+    brief = context.get("brief")
+    if isinstance(brief, dict):
+        for key in ("dialect", "dialect_preset"):
+            value = brief.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return ""
 
 
 def _first_json_object(text: str) -> str:
@@ -436,7 +474,7 @@ class OpenAILLMAdapter(RealAdapterMixin, LLMProvider):
 
         def make_request(repair_instruction: Optional[str]) -> Dict[str, Any]:
             messages = [
-                {"role": "system", "content": _llm_system_prompt(task)},
+                {"role": "system", "content": _llm_system_prompt(task, _dialect_of(context))},
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False, default=str)},
             ]
             if repair_instruction:
@@ -488,7 +526,7 @@ class GeminiLLMAdapter(RealAdapterMixin, LLMProvider):
         deadline = time.monotonic() + settings.LLM_TOTAL_BUDGET_SEC
 
         def make_request(repair_instruction: Optional[str]) -> Dict[str, Any]:
-            text = _llm_system_prompt(task) + "\n\nINPUT:\n" + json.dumps(context, ensure_ascii=False, default=str)
+            text = _llm_system_prompt(task, _dialect_of(context)) + "\n\nINPUT:\n" + json.dumps(context, ensure_ascii=False, default=str)
             if repair_instruction:
                 text += "\n\n" + repair_instruction
             body = {
@@ -566,7 +604,7 @@ class AnthropicLLMAdapter(RealAdapterMixin, LLMProvider):
             body = {
                 "model": model_id,
                 "max_tokens": 4096,
-                "system": _llm_system_prompt(task),
+                "system": _llm_system_prompt(task, _dialect_of(context)),
                 # No assistant prefill: claude-sonnet-5 rejects it outright
                 # ("This model does not support assistant message prefill"),
                 # so the conversation ends with the user turn and the JSON is

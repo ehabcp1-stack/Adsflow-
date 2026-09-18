@@ -37,12 +37,29 @@ from app.services.jobs import create_job, register_handler, set_progress
 
 
 def latest_job(db: Session, project: Project, job_type: str) -> Optional[GenerationJob]:
-    return (
+    """This stage's most recent job — read *before* the rest of the payload.
+
+    Call this first in a stage's GET handler, because it also expires the
+    project so everything read afterwards is at least as new as the job status
+    being reported.
+
+    The reason is the gap between two SELECTs. A driver that does not hold a
+    read snapshot — pysqlite runs SELECTs outside a transaction, and any
+    autocommit read behaves the same — can read the project row before the
+    worker thread commits the stage and the job row after it. The response
+    then says `completed` while still carrying the state from before the job
+    ran, and the client, which stops polling on `completed`, is left looking
+    at a screen that never advanced. It is a narrow window, and a job that
+    lands in it is exactly the one the user is watching.
+    """
+    job = (
         db.query(GenerationJob)
         .filter(GenerationJob.project_id == project.id, GenerationJob.job_type == job_type)
         .order_by(GenerationJob.created_at.desc())
         .first()
     )
+    db.expire(project)
+    return job
 
 
 def _advance(db: Session, project: Project, *, when: tuple, to: ProjectState, note: str) -> None:

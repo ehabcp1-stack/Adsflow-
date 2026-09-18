@@ -242,4 +242,32 @@ def script_payload(script: ScriptVersion) -> Dict[str, Any]:
         "hook_variant": script.hook_variant,
         "is_selected": script.is_selected,
         "concept_id": script.concept_id,
+        # Every word the dialect layer thinks is not Iraqi, with what to put
+        # instead — per line, so the screen can offer the swap where the word
+        # actually is. The user asked for this directly: he wants to fix any
+        # word he sees as wrong himself, because he is the one who knows how
+        # people talk where the ad runs.
+        "dialect_flags": dialect_flags(script),
     }
+
+
+def dialect_flags(script: ScriptVersion) -> List[Dict[str, Any]]:
+    """Non-Iraqi words in this script, located by line and by character.
+
+    Only the spoken lines are searched. `hook`, `cta` and `voice_over_text`
+    are derived from those same lines every time the script is saved
+    (`update_script_text`), so flagging them too would show the user the same
+    word twice and offer him a swap in a place that gets overwritten.
+
+    `line_index` is the position in `lines`, which is the array the screen
+    edits; `start`/`end` locate the word inside that line's `voice_line`.
+    """
+    from app.services.dialect import find_non_iraqi
+
+    preset_name = script.dialect_preset or "iraqi_professional"
+    out: List[Dict[str, Any]] = []
+    for index, line in enumerate(script.lines or []):
+        spoken = (line or {}).get("voice_line") or ""
+        for flag in find_non_iraqi(spoken, preset_name=preset_name):
+            out.append({"line_index": index, **flag.as_dict()})
+    return out
