@@ -17,6 +17,7 @@ import pathlib
 
 import pytest
 
+from app.core.config import settings
 from app.core.db import time_key
 from app.core.enums import JobType, ProjectState
 from app.models import GenerationJob, Project
@@ -253,3 +254,117 @@ def test_the_approval_gate_refuses_before_a_job_is_created(client, make_project,
     assert refused.status_code == 409
     assert refused.json()["error"]["code"] == "approval_required"
     assert not project.jobs
+
+
+# --------------------------------------------------------------------------
+# A job nothing is working on must not look like one that is
+# --------------------------------------------------------------------------
+def _age_job(db, job_id: str, seconds: float) -> None:
+    """Backdate a RUNNING job so it looks abandoned."""
+    from datetime import timedelta
+
+    from app.core.db import utcnow
+
+    job = db.get(GenerationJob, job_id)
+    job.status = "running"
+    job.started_at = utcnow() - timedelta(seconds=seconds)
+    job.progress = 0.15
+    job.progress_label = "understanding the brief"
+    db.commit()
+
+
+def test_a_job_orphaned_by_a_restart_is_failed_at_startup(client, db, make_project, no_dispatch):
+    """The inline pool lives in this process; a RUNNING job at boot is dead.
+
+    Found live: an analysis job sat at `running`, progress 0.15, for 19
+    minutes after a deploy restarted the container. Nothing would ever have
+    moved it, and the screen polled it forever.
+    """
+    project = make_project(name="انقطع السيرفر")
+    job_id = client.post(f"{API}/projects/{project.id}/analysis/run").json()["job"]["id"]
+    _age_job(db, job_id, seconds=5)  # young, but the process is restarting
+
+    # Counts the whole table, so assert on this job rather than the total —
+    # other tests in the suite leave running jobs behind too.
+    assert jobs_service.reap_stale_jobs(db, all_running=True) >= 1
+
+    payload = client.get(f"{API}/projects/{project.id}/analysis").json()
+    assert payload["job"]["status"] == "failed"
+    assert "restarted" in payload["job"]["error_message"]
+
+
+def test_a_stale_job_does_not_block_the_retry(client, db, make_project, no_dispatch):
+    """The dead-end this closes.
+
+    `find_active_duplicate` handed the abandoned job back to every retry and
+    `execute_job` refuses to touch a RUNNING one — so the stage could not be
+    run again by anything the UI offered. A stuck job was not a delay, it was
+    a project that could never move.
+    """
+    project = make_project(name="ما ينعاد")
+    pid = project.id
+    first = client.post(f"{API}/projects/{pid}/analysis/run").json()["job"]["id"]
+    _age_job(db, first, seconds=settings.JOB_STALE_AFTER_SEC + 60)
+
+    second = client.post(f"{API}/projects/{pid}/analysis/run").json()["job"]
+    assert second["id"] != first, "the retry was handed the dead job again"
+    assert second["status"] == "queued"
+
+    db.expire_all()
+    assert db.get(GenerationJob, first).status == "failed"
+
+    jobs_service.execute_job(db, second["id"])
+    assert client.get(f"{API}/projects/{pid}/analysis").json()["analysis"] is not None
+
+
+def test_a_slow_but_living_job_is_left_alone(client, db, make_project, no_dispatch):
+    """The ceiling sits above the provider's own, so slow is not dead.
+
+    Three attempts at PROVIDER_TIMEOUT_SEC plus backoff is about six minutes;
+    reaping below that would kill work that was about to finish.
+    """
+    project = make_project(name="بطيء بس شغال")
+    job_id = client.post(f"{API}/projects/{project.id}/analysis/run").json()["job"]["id"]
+    _age_job(db, job_id, seconds=settings.JOB_STALE_AFTER_SEC - 60)
+
+    assert jobs_service.reap_stale_jobs(db) == 0
+    assert db.get(GenerationJob, job_id).status == "running"
+
+
+def test_the_stale_ceiling_is_above_the_provider_ceiling():
+    """Pinned as a relationship, not a number — either may be retuned."""
+    provider_ceiling = settings.PROVIDER_TIMEOUT_SEC * (settings.PROVIDER_MAX_RETRIES + 1)
+    assert settings.JOB_STALE_AFTER_SEC > provider_ceiling
+
+
+# --------------------------------------------------------------------------
+# Two model calls that do not read each other should not be paid for in series
+# --------------------------------------------------------------------------
+def test_the_two_analysis_model_calls_overlap(db, make_project, monkeypatch):
+    """`brief_interpretation` and `creative_strategy` run side by side.
+
+    In series the stage costs two ~28s calls for no reason: neither reads the
+    other's output. This asserts overlap rather than a wall-clock number, so
+    it stays true on a fast machine and on a slow one.
+    """
+    import threading
+    import time
+
+    from app.services import analysis as analysis_service
+
+    inside = threading.Barrier(2, timeout=5)
+    real = analysis_service.get_llm()
+
+    class _Overlapping:
+        def complete_json(self, *, task, context):
+            if task in ("brief_interpretation", "creative_strategy"):
+                # Neither call can pass this point alone: if they were
+                # sequential, the first would time out waiting here.
+                inside.wait()
+                time.sleep(0.01)
+            return real.complete_json(task=task, context=context)
+
+    monkeypatch.setattr(analysis_service, "get_llm", lambda *a, **k: _Overlapping())
+    project = make_project(name="توازي")
+    analysis = analysis_service.run_analysis(db, project)
+    assert analysis.brief_interpretation and analysis.creative_strategy

@@ -16,6 +16,7 @@ import json
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timezone
 from typing import Any, Callable, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -54,10 +55,69 @@ def idempotency_key(project_id: str, job_type: str, scene_id: Optional[str],
     return hashlib.sha256(material.encode()).hexdigest()[:32]
 
 
+def is_stale(job: GenerationJob) -> bool:
+    """True for a job that says RUNNING but cannot still be running.
+
+    Nothing ever wrote to a job again after the thread carrying it died, so
+    "running" is a claim made once at the start and never revisited. A deploy
+    is enough to make it false: Railway restarts the container, the thread
+    pool goes with it, and the row keeps saying RUNNING forever.
+
+    Measured on the live site the day this was written: an analysis job sat at
+    `running`, progress 0.15, for 19 minutes — with a provider HTTP ceiling of
+    about 6 (3 attempts x 120s + backoff), so no live thread could have been
+    in it. Worse, `find_active_duplicate` handed that dead job back to every
+    retry and `execute_job` refuses to touch a RUNNING one, so the project
+    could not be analysed again by any means the UI offered. A stuck job was
+    not a delay, it was a dead end.
+    """
+    if job.status != JobStatus.RUNNING.value:
+        return False
+    started = job.started_at or job.created_at
+    if started is None:  # pragma: no cover - defensive
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return (utcnow() - started).total_seconds() > settings.JOB_STALE_AFTER_SEC
+
+
+def reap_stale_jobs(db: Session, *, all_running: bool = False) -> int:
+    """Fail jobs that nothing is working on any more, and say why.
+
+    Called at startup with `all_running=True`: with the inline backend the
+    worker pool lives inside this process, so a job found RUNNING before this
+    process has run anything is by definition abandoned by the previous one.
+    Called with the default during normal operation, where only jobs past the
+    staleness ceiling are declared dead.
+
+    The alternative — leaving them — is the worst of both: the screen polls a
+    job that will never move, and the user cannot start a new one.
+    """
+    running = db.query(GenerationJob).filter(GenerationJob.status == JobStatus.RUNNING.value).all()
+    dead = [job for job in running if all_running or is_stale(job)]
+    for job in dead:
+        job.status = JobStatus.FAILED.value
+        job.progress_label = "interrupted"
+        job.error_message = (
+            "The server restarted while this was running, so it was stopped. "
+            "Nothing was saved — run it again. / انقطع الشغل لأن السيرفر انطفى وقتها. "
+            "ما انحفظ شي — شغّلها مرة ثانية."
+        )
+        job.finished_at = utcnow()
+    if dead:
+        db.commit()
+    return len(dead)
+
+
 def find_active_duplicate(db: Session, *, project_id: str, job_type: str,
                           scene_id: Optional[str],
                           payload: Optional[Dict[str, Any]]) -> Optional[GenerationJob]:
-    """An in-flight job for the same work, if one exists."""
+    """An in-flight job for the same work, if one exists.
+
+    A job that only *claims* to be in flight (see `is_stale`) is not one: it
+    is reaped here rather than handed back, so pressing the button again
+    actually starts something.
+    """
     key = idempotency_key(project_id, job_type, scene_id, payload)
     candidates = (
         db.query(GenerationJob)
@@ -71,8 +131,12 @@ def find_active_duplicate(db: Session, *, project_id: str, job_type: str,
         .all()
     )
     for job in candidates:
-        if (job.payload or {}).get("_idempotency_key") == key and job.scene_id == scene_id:
-            return job
+        if (job.payload or {}).get("_idempotency_key") != key or job.scene_id != scene_id:
+            continue
+        if is_stale(job):
+            reap_stale_jobs(db)
+            continue
+        return job
     return None
 
 

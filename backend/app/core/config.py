@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # --- Provider HTTP behaviour (app/providers/http.py) ------------------
     PROVIDER_TIMEOUT_SEC: float = 120.0
     PROVIDER_MAX_RETRIES: int = 2
+
+    #: How long a job may claim to be RUNNING before it is treated as dead.
+    #: Above the provider HTTP ceiling (3 attempts x PROVIDER_TIMEOUT_SEC plus
+    #: backoff, ~6 minutes) so a slow-but-alive job is never reaped, and well
+    #: under the patience of someone watching a spinner.
+    JOB_STALE_AFTER_SEC: float = 900.0
     # Async video jobs (submit -> poll -> fetch) — bounds the poll loop so a
     # stuck vendor job can never hang a background worker forever.
     PROVIDER_POLL_TIMEOUT_SEC: float = 600.0

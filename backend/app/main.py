@@ -27,6 +27,23 @@ async def lifespan(application: FastAPI):
     init_db()
     # Import side effect: registers all job handlers with the queue.
     from app.services import production as _production  # noqa: F401
+    from app.services import stage_jobs as _stage_jobs  # noqa: F401
+
+    # A job found RUNNING before this process has run anything was left behind
+    # by the previous one — the inline worker pool lives inside this process,
+    # so it died with it. Left alone the row says "running" forever: the screen
+    # polls something that will never move, and the idempotency check hands the
+    # same dead job back to every retry, so the stage can never be run again.
+    from app.core.db import SessionLocal
+    from app.services.jobs import reap_stale_jobs
+
+    _boot_db = SessionLocal()
+    try:
+        interrupted = reap_stale_jobs(_boot_db, all_running=True)
+        if interrupted:
+            log.warning("marked %s job(s) failed: interrupted by a restart", interrupted)
+    finally:
+        _boot_db.close()
 
     if settings.STORAGE_BACKEND == "local":
         Path(settings.STORAGE_LOCAL_DIR).mkdir(parents=True, exist_ok=True)

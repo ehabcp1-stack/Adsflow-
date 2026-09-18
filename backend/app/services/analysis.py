@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -358,14 +359,37 @@ def estimate_project_cost(project: Project, assets_summary: Dict[str, Any], mode
 
 
 def run_analysis(db: Session, project: Project, *, version: Optional[int] = None) -> ProjectAnalysis:
+    """Produce one analysis report. Two model calls, run side by side.
+
+    They used to run one after the other, which made the stage cost the sum of
+    two ~28s calls for no reason: `brief_interpretation` reads only the brief,
+    and `creative_strategy` reads the brief plus the measured asset summary.
+    Neither reads the other's output. Measuring the assets first and then
+    running both concurrently makes the stage cost roughly one model call
+    instead of two — the difference between a minute of spinner and half of it.
+
+    The asset measurement stays on this thread on purpose: it writes the
+    measurements back onto the Asset rows through `db`, and a Session is not
+    safe to touch from two threads at once.
+    """
     llm = get_llm()
     brief = _brief_dict(project)
 
-    interpretation = llm.complete_json(task="brief_interpretation", context={"brief": brief}).data
     assets_summary = analyze_assets(db, project)
-    strategy = llm.complete_json(
-        task="creative_strategy", context={"brief": brief, "assets_summary": assets_summary}
-    ).data
+
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="adflow-analysis") as pool:
+        brief_call = pool.submit(
+            llm.complete_json, task="brief_interpretation", context={"brief": brief}
+        )
+        strategy_call = pool.submit(
+            llm.complete_json,
+            task="creative_strategy",
+            context={"brief": brief, "assets_summary": assets_summary},
+        )
+        # .result() re-raises whatever the call raised, on this thread, so a
+        # provider failure still fails the job instead of being swallowed.
+        interpretation = brief_call.result().data
+        strategy = strategy_call.result().data
 
     # The mode decision is driven by real, measured counts (see
     # recommend_production_mode) rather than the LLM/mock provider's opinion
