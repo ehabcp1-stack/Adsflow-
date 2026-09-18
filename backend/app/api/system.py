@@ -120,3 +120,36 @@ def system_health(user: User = Depends(get_current_user)) -> Dict[str, Any]:
         "ffmpeg_available": ffmpeg_available(),
         "ffprobe_available": ffprobe_available(),
     }
+
+
+@router.get("/threads")
+def thread_dump(user: User = Depends(get_current_user)) -> Dict[str, Any]:
+    """Where every thread in this process is standing, right now.
+
+    A job that stops moving and never fails leaves no trace anywhere else: no
+    exception, no log line, no timeout — the worker thread is simply parked on
+    a line and nothing above it can tell which one. Three separate hypotheses
+    about that line were wrong here (storage fetches, prompt size, retry
+    counts), each cheap to guess and expensive to test blind. This makes the
+    answer a single request.
+
+    Only file, line and function are returned. `traceback.format_stack` does
+    not include local variables, so a key held in a frame cannot leave through
+    here — which is the reason to use it rather than a richer dumper.
+    """
+    import sys
+    import threading
+    import traceback
+
+    names = {thread.ident: thread.name for thread in threading.enumerate()}
+    dump = []
+    for ident, frame in sys._current_frames().items():
+        frames = [line.strip() for line in traceback.format_stack(frame)]
+        dump.append({
+            "thread": names.get(ident, str(ident)),
+            "depth": len(frames),
+            # The tail is where it is stuck; the head is just uvicorn's plumbing.
+            "stack": frames[-14:],
+        })
+    dump.sort(key=lambda entry: entry["thread"])
+    return {"thread_count": len(dump), "threads": dump}
