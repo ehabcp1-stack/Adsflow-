@@ -84,6 +84,19 @@ class Settings(BaseSettings):
     PROVIDER_TIMEOUT_SEC: float = 120.0
     PROVIDER_MAX_RETRIES: int = 2
 
+    #: A structured-text completion is one request/response, not a media render,
+    #: so it fails fast. 120s (PROVIDER_TIMEOUT_SEC) is a media-job timeout and
+    #: far too patient for this.
+    LLM_TIMEOUT_SEC: float = 60.0
+
+    #: Wall-clock budget for one `complete_json`, retries and the repair attempt
+    #: included. Without it the two retry layers MULTIPLY: 2 repair attempts x
+    #: 3 HTTP attempts x 120s came to twelve minutes of silence, and nobody
+    #: chose twelve minutes — it fell out of two reasonable-looking numbers.
+    #: Measured live at 212s and still going, with the database answering in
+    #: 79ms, so the model call was the whole of it.
+    LLM_TOTAL_BUDGET_SEC: float = 150.0
+
     #: How long a job may claim to be RUNNING before it is treated as dead.
     #: Above the provider HTTP ceiling (3 attempts x PROVIDER_TIMEOUT_SEC plus
     #: backoff, ~6 minutes) so a slow-but-alive job is never reaped, and well

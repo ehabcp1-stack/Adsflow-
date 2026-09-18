@@ -376,6 +376,7 @@ def _complete_json_with_repair(
     task: str,
     make_request: Callable[[Optional[str]], Dict[str, Any]],
     extract_text: Callable[[Dict[str, Any]], str],
+    deadline: Optional[float] = None,
 ) -> Tuple[bool, Dict[str, Any], Optional[Dict[str, Any]], List[str]]:
     """Ask for structured JSON, validate, and allow exactly ONE repair retry.
 
@@ -383,10 +384,18 @@ def _complete_json_with_repair(
     the first attempt, `schemas.repair_prompt(...)` text on the second — and
     this never calls it a third time, matching CLAUDE.md's "never infinite
     retry" rule for structured-output specifically.
+
+    `deadline` is the wall-clock stop for the whole thing. The repair attempt
+    is skipped once the budget is gone: this layer retrying twice while the
+    HTTP layer beneath it retries three times is what turned a 120s timeout
+    into twelve minutes of a spinner and no answer.
     """
     errors: List[str] = []
     raw: Optional[Dict[str, Any]] = None
     for attempt in range(2):
+        if attempt and deadline is not None and time.monotonic() >= deadline:
+            errors.append("ran out of time before the reply could be repaired")
+            break
         instruction = schemas.repair_prompt(task, errors) if attempt == 1 else None
         raw = make_request(instruction)
         text = extract_text(raw)
@@ -421,6 +430,9 @@ class OpenAILLMAdapter(RealAdapterMixin, LLMProvider):
         url = f"{settings.OPENAI_BASE_URL}{OPENAI_CHAT_COMPLETIONS_PATH}"
         headers = {"Authorization": f"Bearer {self._api_key()}", "Content-Type": "application/json"}
         started = time.time()
+        # One wall-clock budget for this completion, spent across the HTTP
+        # retries and the repair attempt rather than multiplied by them.
+        deadline = time.monotonic() + settings.LLM_TOTAL_BUDGET_SEC
 
         def make_request(repair_instruction: Optional[str]) -> Dict[str, Any]:
             messages = [
@@ -430,14 +442,15 @@ class OpenAILLMAdapter(RealAdapterMixin, LLMProvider):
             if repair_instruction:
                 messages.append({"role": "user", "content": repair_instruction})
             body = {"model": model_id, "messages": messages, "response_format": {"type": "json_object"}}
-            return http.post_json(url, headers=headers, json=body)
+            return http.post_json(url, headers=headers, json=body,
+                                  timeout=settings.LLM_TIMEOUT_SEC, deadline=deadline)
 
         def extract_text(raw: Dict[str, Any]) -> str:
             return raw["choices"][0]["message"]["content"]
 
         try:
             ok, payload, raw, errors = _complete_json_with_repair(
-                task=task, make_request=make_request, extract_text=extract_text
+                task=task, make_request=make_request, extract_text=extract_text, deadline=deadline
             )
         except http.ProviderHttpError as exc:
             return self._error_result(task, model_id, str(exc))
@@ -470,6 +483,9 @@ class GeminiLLMAdapter(RealAdapterMixin, LLMProvider):
         url = f"{settings.GEMINI_BASE_URL}{GEMINI_GENERATE_CONTENT_PATH.format(model=model_id)}"
         params = {"key": self._api_key()}
         started = time.time()
+        # One wall-clock budget for this completion, spent across the HTTP
+        # retries and the repair attempt rather than multiplied by them.
+        deadline = time.monotonic() + settings.LLM_TOTAL_BUDGET_SEC
 
         def make_request(repair_instruction: Optional[str]) -> Dict[str, Any]:
             text = _llm_system_prompt(task) + "\n\nINPUT:\n" + json.dumps(context, ensure_ascii=False, default=str)
@@ -479,14 +495,15 @@ class GeminiLLMAdapter(RealAdapterMixin, LLMProvider):
                 "contents": [{"role": "user", "parts": [{"text": text}]}],
                 "generationConfig": {"responseMimeType": "application/json"},
             }
-            return http.post_json(url, params=params, json=body)
+            return http.post_json(url, params=params, json=body,
+                                  timeout=settings.LLM_TIMEOUT_SEC, deadline=deadline)
 
         def extract_text(raw: Dict[str, Any]) -> str:
             return raw["candidates"][0]["content"]["parts"][0]["text"]
 
         try:
             ok, payload, raw, errors = _complete_json_with_repair(
-                task=task, make_request=make_request, extract_text=extract_text
+                task=task, make_request=make_request, extract_text=extract_text, deadline=deadline
             )
         except http.ProviderHttpError as exc:
             return self._error_result(task, model_id, str(exc))
@@ -538,6 +555,9 @@ class AnthropicLLMAdapter(RealAdapterMixin, LLMProvider):
             "Content-Type": "application/json",
         }
         started = time.time()
+        # One wall-clock budget for this completion, spent across the HTTP
+        # retries and the repair attempt rather than multiplied by them.
+        deadline = time.monotonic() + settings.LLM_TOTAL_BUDGET_SEC
 
         def make_request(repair_instruction: Optional[str]) -> Dict[str, Any]:
             user = "INPUT:\n" + json.dumps(context, ensure_ascii=False, default=str)
@@ -553,7 +573,8 @@ class AnthropicLLMAdapter(RealAdapterMixin, LLMProvider):
                 # extracted from whatever wrapping the reply arrives in.
                 "messages": [{"role": "user", "content": user}],
             }
-            return http.post_json(url, headers=headers, json=body)
+            return http.post_json(url, headers=headers, json=body,
+                                  timeout=settings.LLM_TIMEOUT_SEC, deadline=deadline)
 
         def extract_text(raw: Dict[str, Any]) -> str:
             blocks = raw.get("content") or []
@@ -562,7 +583,7 @@ class AnthropicLLMAdapter(RealAdapterMixin, LLMProvider):
 
         try:
             ok, payload, raw, errors = _complete_json_with_repair(
-                task=task, make_request=make_request, extract_text=extract_text
+                task=task, make_request=make_request, extract_text=extract_text, deadline=deadline
             )
         except http.ProviderHttpError as exc:
             return self._error_result(task, model_id, str(exc))

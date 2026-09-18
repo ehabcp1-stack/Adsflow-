@@ -90,8 +90,12 @@ def _retryable(kind: str) -> bool:
     return kind in (ErrorKind.RATE_LIMIT, ErrorKind.SERVER, ErrorKind.TIMEOUT)
 
 
-def _backoff_sleep(attempt: int) -> None:
-    time.sleep(min(2**attempt, 10))
+def _backoff_sleep(attempt: int, deadline: Optional[float] = None) -> None:
+    delay = min(2**attempt, 10)
+    if deadline is not None:
+        delay = min(delay, max(deadline - time.monotonic(), 0.0))
+    if delay > 0:
+        time.sleep(delay)
 
 
 def _resolved(timeout: Optional[float], max_retries: Optional[int]) -> tuple[float, int]:
@@ -110,10 +114,28 @@ def _request(
     params: Optional[Dict[str, Any]] = None,
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
+    deadline: Optional[float] = None,
 ) -> httpx.Response:
+    """One vendor call with bounded retries.
+
+    `deadline` is a `time.monotonic()` stamp past which no further attempt is
+    started and no attempt may run beyond. Retry COUNTS alone are not a bound:
+    a caller that retries this function in turn multiplies them, which is how
+    an LLM call reached twelve minutes of silence from a 120s timeout and two
+    layers of "retry twice". A wall-clock budget cannot be multiplied.
+    """
     timeout_s, retries = _resolved(timeout, max_retries)
     last_error: Optional[str] = None
     for attempt in range(retries + 1):
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProviderHttpError(
+                    ErrorKind.TIMEOUT,
+                    last_error or f"{method} {redact(url)} ran out of time before it could answer",
+                )
+            # Never let one attempt outlive the budget it is spending.
+            timeout_s = min(timeout_s, remaining)
         try:
             with httpx.Client(timeout=timeout_s) as client:
                 response = client.request(method, url, headers=headers, json=json, params=params)
@@ -121,14 +143,14 @@ def _request(
             last_error = f"{method} {redact(url)} timed out: {exc}"
             if attempt < retries:
                 logger.warning("provider request timeout, retrying (attempt %s): %s", attempt + 1, redact(url))
-                _backoff_sleep(attempt)
+                _backoff_sleep(attempt, deadline)
                 continue
             raise ProviderHttpError(ErrorKind.TIMEOUT, last_error) from exc
         except httpx.HTTPError as exc:
             last_error = f"{method} {redact(url)} failed: {exc}"
             if attempt < retries:
                 logger.warning("provider request error, retrying (attempt %s): %s", attempt + 1, redact(url))
-                _backoff_sleep(attempt)
+                _backoff_sleep(attempt, deadline)
                 continue
             raise ProviderHttpError(ErrorKind.UNKNOWN, last_error) from exc
 
@@ -138,7 +160,7 @@ def _request(
                 logger.warning(
                     "provider http %s, retrying (attempt %s): %s", response.status_code, attempt + 1, redact(url)
                 )
-                _backoff_sleep(attempt)
+                _backoff_sleep(attempt, deadline)
                 continue
             raise ProviderHttpError(
                 kind,
@@ -160,9 +182,11 @@ def post_json(
     params: Optional[Dict[str, Any]] = None,
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """POST and return the parsed JSON body, or raise `ProviderHttpError`."""
-    response = _request("POST", url, headers=headers, json=json, params=params, timeout=timeout, max_retries=max_retries)
+    response = _request("POST", url, headers=headers, json=json, params=params, timeout=timeout,
+                        max_retries=max_retries, deadline=deadline)
     return _parse_json(response, url)
 
 
@@ -173,9 +197,11 @@ def get_json(
     params: Optional[Dict[str, Any]] = None,
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """GET and return the parsed JSON body, or raise `ProviderHttpError`."""
-    response = _request("GET", url, headers=headers, params=params, timeout=timeout, max_retries=max_retries)
+    response = _request("GET", url, headers=headers, params=params, timeout=timeout,
+                        max_retries=max_retries, deadline=deadline)
     return _parse_json(response, url)
 
 
@@ -187,6 +213,7 @@ def post_bytes(
     params: Optional[Dict[str, Any]] = None,
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
+    deadline: Optional[float] = None,
 ) -> bytes:
     """POST and return the raw response body.
 
@@ -194,7 +221,8 @@ def post_bytes(
     itself rather than a JSON envelope — this shares the same retry/backoff
     and error classification as `post_json` without assuming a JSON body.
     """
-    response = _request("POST", url, headers=headers, json=json, params=params, timeout=timeout, max_retries=max_retries)
+    response = _request("POST", url, headers=headers, json=json, params=params, timeout=timeout,
+                        max_retries=max_retries, deadline=deadline)
     return response.content
 
 
@@ -212,6 +240,7 @@ def download_to_file(
     headers: Optional[Dict[str, str]] = None,
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
+    deadline: Optional[float] = None,
 ) -> str:
     """Stream a generated asset (video/image/audio URL) to a local path.
 
@@ -227,7 +256,7 @@ def download_to_file(
                 if response.status_code >= 400:
                     kind = _classify(response.status_code)
                     if _retryable(kind) and attempt < retries:
-                        _backoff_sleep(attempt)
+                        _backoff_sleep(attempt, deadline)
                         continue
                     raise ProviderHttpError(
                         kind, f"GET {redact(url)} -> {response.status_code}", status_code=response.status_code
@@ -240,13 +269,13 @@ def download_to_file(
         except httpx.TimeoutException as exc:
             last_error = f"GET {redact(url)} timed out: {exc}"
             if attempt < retries:
-                _backoff_sleep(attempt)
+                _backoff_sleep(attempt, deadline)
                 continue
             raise ProviderHttpError(ErrorKind.TIMEOUT, last_error) from exc
         except httpx.HTTPError as exc:
             last_error = f"GET {redact(url)} failed: {exc}"
             if attempt < retries:
-                _backoff_sleep(attempt)
+                _backoff_sleep(attempt, deadline)
                 continue
             raise ProviderHttpError(ErrorKind.UNKNOWN, last_error) from exc
 

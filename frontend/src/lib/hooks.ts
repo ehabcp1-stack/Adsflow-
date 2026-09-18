@@ -63,6 +63,9 @@ export type StageJob = {
   progress: number | null;
   progress_label: string | null;
   error_message: string | null;
+  /** Arabic text for failures the product produced itself; null for whatever
+   *  a provider reported, which arrives in `error_message` only. */
+  error_ar?: string | null;
 };
 
 export const JOB_IN_FLIGHT = ['queued', 'running', 'retrying'];

@@ -55,6 +55,25 @@ def idempotency_key(project_id: str, job_type: str, scene_id: Optional[str],
     return hashlib.sha256(material.encode()).hexdigest()[:32]
 
 
+#: Failure reasons the product itself produces, as opposed to whatever a
+#: provider said. Each carries both languages so the screen can show the one
+#: the user reads, and `error_message` stays English for logs and the API.
+#:
+#: Written after the first one shipped as a single string with both languages
+#: in it, separated by a slash. It rendered as one paragraph of mixed RTL and
+#: LTR text — technically both translations, practically neither, and a
+#: violation of the rule that every user-facing string is picked by locale.
+INTERRUPTED = "interrupted_by_restart"
+
+JOB_ERRORS: Dict[str, Dict[str, str]] = {
+    INTERRUPTED: {
+        "en": "The server restarted while this was running, so it stopped. "
+              "Nothing was saved — run it again.",
+        "ar": "انقطع الشغل لأن السيرفر انطفى وقتها. ما انحفظ شي — شغّلها مرة ثانية.",
+    },
+}
+
+
 def is_stale(job: GenerationJob) -> bool:
     """True for a job that says RUNNING but cannot still be running.
 
@@ -97,12 +116,8 @@ def reap_stale_jobs(db: Session, *, all_running: bool = False) -> int:
     dead = [job for job in running if all_running or is_stale(job)]
     for job in dead:
         job.status = JobStatus.FAILED.value
-        job.progress_label = "interrupted"
-        job.error_message = (
-            "The server restarted while this was running, so it was stopped. "
-            "Nothing was saved — run it again. / انقطع الشغل لأن السيرفر انطفى وقتها. "
-            "ما انحفظ شي — شغّلها مرة ثانية."
-        )
+        job.progress_label = INTERRUPTED
+        job.error_message = JOB_ERRORS[INTERRUPTED]["en"]
         job.finished_at = utcnow()
     if dead:
         db.commit()
@@ -273,6 +288,10 @@ def job_payload(job: GenerationJob) -> Dict[str, Any]:
         "estimated_cost_usd": job.estimated_cost_usd,
         "actual_cost_usd": job.actual_cost_usd,
         "error_message": job.error_message,
+        # Present only for a failure the product produced itself; the UI shows
+        # whichever language the user is reading and falls back to
+        # `error_message` for anything a provider reported.
+        "error_ar": (JOB_ERRORS.get(job.progress_label or "") or {}).get("ar"),
         "result": job.result,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,

@@ -237,7 +237,8 @@ def test_llm_repair_retry_happens_at_most_once(monkeypatch):
 
     calls = {"count": 0}
 
-    def fake_post_json(url, *, headers=None, json=None, params=None, timeout=None, max_retries=None):
+    def fake_post_json(url, *, headers=None, json=None, params=None, timeout=None,
+                       max_retries=None, deadline=None):
         calls["count"] += 1
         if calls["count"] == 1:
             # First attempt: invalid — missing every required ConceptsResult field.
@@ -263,7 +264,7 @@ def test_llm_repair_gives_up_cleanly_after_one_failed_retry(monkeypatch):
 
     calls = {"count": 0}
 
-    def always_bad_post_json(url, *, headers=None, json=None, params=None, timeout=None, max_retries=None):
+    def always_bad_post_json(url, *, headers=None, json=None, params=None, timeout=None, max_retries=None, deadline=None):
         calls["count"] += 1
         return {"choices": [{"message": {"content": jsonlib.dumps({"concepts": "not even a list"})}}]}
 
