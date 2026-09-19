@@ -332,3 +332,51 @@ def test_a_refinement_aimed_at_one_line_still_finds_it():
     roles = effective_roles(LIVE_LINES)
     assert roles.count("hook") == 1 and roles.count("cta") == 1
     assert roles[0] == "hook" and roles[-1] == "cta"
+
+
+def test_a_stored_empty_cta_does_not_fail_a_reel_that_has_one(db, make_project):
+    """`missing_cta` overrides the whole score, so it must read the real CTA.
+
+    The columns are written when a version is created; a version stored before
+    `derive_parts` existed holds three empty strings next to lines that plainly
+    contain all three. Reading `script.cta` raw called a reel with the CTA card
+    burnt into the picture and the closing line in the voice-over "no call to
+    action in the final cut".
+    """
+    from app.models import ScriptVersion
+    from app.services.qc import _critical_checks
+    from app.services.scripts import parts_of
+
+    project = make_project(name="دعوة موجودة", cta="اترك رقمك ونتواصل وياك")
+    stored_empty = ScriptVersion(
+        project_id=project.id, version=3, variant="primary",
+        hook="", body="", cta="",
+        voice_over_text=" ".join(line["voice_line"] for line in LIVE_LINES),
+        lines=LIVE_LINES, dialect_preset="iraqi_professional",
+        total_duration_sec=15.0, word_count=20, score=88.0,
+    )
+    db.add(stored_empty)
+    db.flush()
+
+    assert parts_of(stored_empty)[2] == "احجز موعد زيارة اليوم"
+    codes = {issue["code"] for issue in _critical_checks(project, stored_empty, None, None)}
+    assert "missing_cta" not in codes
+
+
+def test_the_payload_shows_the_parts_the_rest_of_the_product_acts_on(db, make_project):
+    from app.models import ScriptVersion
+    from app.services.scripts import script_payload
+
+    project = make_project(name="حقول مشتقة")
+    script = ScriptVersion(
+        project_id=project.id, version=3, variant="primary",
+        hook="", body="", cta="", voice_over_text="x",
+        lines=LIVE_LINES, dialect_preset="iraqi_professional",
+        total_duration_sec=15.0, word_count=20, score=88.0,
+    )
+    db.add(script)
+    db.flush()
+
+    payload = script_payload(script)
+    assert payload["hook"] == "تدور على بيت بسعر يناسبك؟"
+    assert payload["cta"] == "احجز موعد زيارة اليوم"

@@ -286,6 +286,26 @@ def effective_roles(lines: List[Dict[str, Any]]) -> List[str]:
     return ["hook"] + ["body"] * (count - 2) + ["cta"]
 
 
+def parts_of(script: Optional[ScriptVersion]) -> tuple:
+    """A script's hook, body and CTA — healed on the way out.
+
+    The columns are filled when a version is written, so a version stored
+    before `derive_parts` existed still holds three empty strings. Everything
+    that reads them has to survive that, because the lines are right there:
+    the cure is one function on the read path rather than a migration.
+
+    It matters beyond the voice preview. `qc._critical_checks` tests
+    `script.cta` to decide whether the ad has a call to action, so an empty
+    column reported `missing_cta` — a critical issue, score-overriding — on a
+    reel with the CTA card burnt into the picture and the closing line in the
+    voice-over.
+    """
+    if script is None:
+        return "", "", ""
+    hook, body, cta = derive_parts(script.lines or [])
+    return (script.hook or hook), (script.body or body), (script.cta or cta)
+
+
 def spoken_hook(script: Optional[ScriptVersion]) -> str:
     """The line to speak when something needs one line — never an empty one.
 
@@ -296,9 +316,7 @@ def spoken_hook(script: Optional[ScriptVersion]) -> str:
     """
     if script is None:
         return "هلا بيك، هذا مثال للصوت العراقي من أدفلو"
-    if (script.hook or "").strip():
-        return script.hook
-    hook, _body, _cta = derive_parts(script.lines or [])
+    hook, _body, _cta = parts_of(script)
     if hook.strip():
         return hook
     spoken = (script.voice_over_text or "").strip()
@@ -310,9 +328,11 @@ def script_payload(script: ScriptVersion) -> Dict[str, Any]:
         "id": script.id,
         "version": script.version,
         "variant": script.variant,
-        "hook": script.hook,
-        "body": script.body,
-        "cta": script.cta,
+        # Healed, not raw: a version stored before `derive_parts` has three
+        # empty columns and lines that plainly contain all three.
+        "hook": parts_of(script)[0],
+        "body": parts_of(script)[1],
+        "cta": parts_of(script)[2],
         "voice_over_text": script.voice_over_text,
         "on_screen_text": script.on_screen_text,
         "lines": script.lines,

@@ -17,6 +17,7 @@ from app.models import BrandKit, Project, QCReport, Render, ScriptVersion, Story
 from app.providers.registry import get_llm
 from app.services import approvals as approval_service
 from app.services import qc_checks
+from app.services import scripts as script_service
 from app.services.editing import active_render
 from app.services.storyboards import active_storyboard
 
@@ -77,8 +78,12 @@ def _critical_checks(
     issues: List[Dict[str, Any]] = []
     vo = (script.voice_over_text if script else "") or ""
     on_screen = " ".join(item.get("text", "") for item in (script.on_screen_text if script else []) or [])
+    # Derived, not read raw: a version stored before `scripts.derive_parts`
+    # has an empty `cta` column and a closing line that plainly is one, and
+    # this check overrides the whole score.
+    script_cta = script_service.parts_of(script)[2] if script else ""
 
-    if not (project.cta and (project.cta in vo or project.cta in on_screen or (script and script.cta))):
+    if not (project.cta and (project.cta in vo or project.cta in on_screen or script_cta)):
         issues.append(
             {"code": "missing_cta", "severity": "critical", "message_en": "No call to action in the final cut.",
              "message_ar": "ما أكو دعوة للتواصل بالنسخة النهائية."}
@@ -124,7 +129,8 @@ def run_qc(db: Session, project: Project, *, render: Optional[Render] = None) ->
         task="qc",
         context={
             "project": {"id": project.id, "name": project.name, "cta": project.cta},
-            "script": {"voice_over_text": script.voice_over_text if script else "", "cta": script.cta if script else ""},
+            "script": {"voice_over_text": script.voice_over_text if script else "",
+                       "cta": script_service.parts_of(script)[2] if script else ""},
             "brand": {"phone": brand.phone if brand else None},
             "render_version": render.version,
         },
