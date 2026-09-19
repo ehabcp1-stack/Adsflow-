@@ -82,19 +82,24 @@ def _critical_checks(
     # has an empty `cta` column and a closing line that plainly is one, and
     # this check overrides the whole score.
     script_cta = script_service.parts_of(script)[2] if script else ""
+    # Everything below compares against this, folded: see
+    # `qc_checks.normalize_arabic`. The strings come from different boxes
+    # filled at different times, and Arabic spelling varies between them.
+    corpus = qc_checks.normalize_arabic(" ".join([vo, on_screen, project.key_information or ""]))
 
-    if not (project.cta and (project.cta in vo or project.cta in on_screen or script_cta)):
+    if not (project.cta and (qc_checks.normalize_arabic(project.cta) in corpus or script_cta)):
         issues.append(
             {"code": "missing_cta", "severity": "critical", "message_en": "No call to action in the final cut.",
              "message_ar": "ما أكو دعوة للتواصل بالنسخة النهائية."}
         )
-    if brand and brand.phone and brand.phone not in (on_screen + vo + (project.key_information or "")):
+    if brand and brand.phone and qc_checks.digits_only(brand.phone) not in qc_checks.digits_only(corpus):
         issues.append(
             {"code": "wrong_phone_number", "severity": "warning",
              "message_en": "Brand phone number never appears — confirm the contact shown on screen.",
              "message_ar": "رقم الهاتف ما يظهر — تأكد من رقم التواصل المعروض."}
         )
-    if project.name and project.name not in (vo + on_screen):
+    # Folded on both sides — "مدينه الورد " and "مدينة الورد" are one name.
+    if project.name and qc_checks.normalize_arabic(project.name) not in corpus:
         issues.append(
             {"code": "wrong_project_name", "severity": "warning",
              "message_en": "Project name is never spoken or shown.",

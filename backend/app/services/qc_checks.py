@@ -43,6 +43,40 @@ def normalize_digits(text: str) -> str:
     return (text or "").translate(_DIGITS)
 
 
+#: Letters Arabic writers use interchangeably, folded to one form before any
+#: comparison. Nobody is consistent about these, least of all across two
+#: different input boxes in the same product.
+_LETTERS = str.maketrans({
+    "\u0629": "\u0647",  # ة -> ه
+    "\u0623": "\u0627", "\u0625": "\u0627", "\u0622": "\u0627", "\u0671": "\u0627",  # أ إ آ ٱ -> ا
+    "\u0649": "\u064a",  # ى -> ي
+    "\u0624": "\u0648",  # ؤ -> و
+    "\u0626": "\u064a",  # ئ -> ي
+    "\u0640": "",         # tatweel
+})
+#: Harakat and other combining marks — invisible to a reader, fatal to `in`.
+_MARKS = re.compile(r"[\u064b-\u0652\u0670\u0653-\u0655]")
+
+
+def normalize_arabic(text: str) -> str:
+    """Fold a string to the form two humans would call "the same words".
+
+    QC compares the project name and the call to action against the script by
+    substring, and the strings come from different boxes filled at different
+    times. On the live server the project was saved as "مدينه الورد " — heh,
+    and a trailing space — while the ad opens by saying "مدينة الورد" with teh
+    marbuta. Two reasons for `in` to be false about an ad that says the name
+    in its first sentence and puts it on screen, and the score lost ten points
+    of brand consistency over it.
+
+    Digits were already folded here for the phone number. Letters are the same
+    problem wearing a different hat.
+    """
+    folded = normalize_digits(text or "").translate(_LETTERS)
+    folded = _MARKS.sub("", folded)
+    return " ".join(folded.split())
+
+
 def digits_only(text: str) -> str:
     return re.sub(r"\D", "", normalize_digits(text))
 
@@ -234,6 +268,9 @@ def copy_checks(project: Project, script: Optional[ScriptVersion],
         for line in ((script.lines if script else []) or [])
     )
     corpus = " ".join([spoken, on_screen, line_text, project.cta or "", project.key_information or ""])
+    # Compared folded: see `normalize_arabic`. A name typed with ه in one box
+    # and spoken with ة in another is the same name to everyone but `in`.
+    folded_corpus = normalize_arabic(corpus)
     checks: List[Dict[str, Any]] = []
 
     if brand and brand.phone:
@@ -249,7 +286,7 @@ def copy_checks(project: Project, script: Optional[ScriptVersion],
         ))
     if project.name:
         checks.append(_check(
-            "project_name_present", project.name.strip() in corpus, "warning",
+            "project_name_present", normalize_arabic(project.name) in folded_corpus, "warning",
             "The project name is spoken or shown.",
             "اسم المشروع ينذكر أو يظهر.",
             fail_en="The project name is never spoken or shown.",
@@ -257,7 +294,8 @@ def copy_checks(project: Project, script: Optional[ScriptVersion],
             expected=project.name,
         ))
     checks.append(_check(
-        "cta_in_copy", bool((project.cta or "").strip()) and (project.cta.strip() in corpus),
+        "cta_in_copy",
+        bool((project.cta or "").strip()) and (normalize_arabic(project.cta) in folded_corpus),
         "critical",
         "The call to action appears in the approved copy.",
         "الدعوة للتواصل موجودة بالنص المعتمد.",
@@ -316,4 +354,7 @@ CRITICAL_CODE_MAP = {
     "cta_in_copy": "missing_cta",
     "phone_matches_brand_kit": "wrong_phone_number",
     "file_not_empty": "product_distortion",
+    # Same observation as `_critical_checks`'s own name test; mapping them to
+    # one code is what stops the report listing it twice.
+    "project_name_present": "wrong_project_name",
 }

@@ -380,3 +380,49 @@ def test_the_payload_shows_the_parts_the_rest_of_the_product_acts_on(db, make_pr
     payload = script_payload(script)
     assert payload["hook"] == "تدور على بيت بسعر يناسبك؟"
     assert payload["cta"] == "احجز موعد زيارة اليوم"
+
+
+# --------------------------------------------------------------------------
+# Arabic spelling is not a match condition
+# --------------------------------------------------------------------------
+def test_one_name_spelled_two_ways_is_one_name():
+    """The live project, verbatim.
+
+    Saved as "مدينه الورد " — heh, plus a trailing space — while the ad opens
+    by saying "مدينة الورد" with teh marbuta. Two reasons for `in` to be false
+    about an ad that says the name in its first sentence and puts it on
+    screen, and ten points of brand consistency lost to it.
+    """
+    from app.services.qc_checks import normalize_arabic
+
+    saved = "مدينه الورد "
+    spoken = "يوم ٥/١٠ مدينة الورد تفتح وحداتها الجديدة بمكان مدروس"
+    assert saved not in spoken, "the raw comparison is the bug being fixed"
+    assert normalize_arabic(saved) in normalize_arabic(spoken)
+
+
+def test_folding_leaves_different_words_different():
+    """A fold that matches everything would be worse than no fold at all."""
+    from app.services.qc_checks import normalize_arabic
+
+    assert normalize_arabic("مدينة الورد") != normalize_arabic("مدينة النور")
+    assert normalize_arabic("الرياض") != normalize_arabic("الريان")
+
+
+def test_digits_still_fold_after_the_letters_do():
+    from app.services.qc_checks import digits_only, normalize_arabic
+
+    assert normalize_arabic("٠٧٧٠١٢٣٤٥٦٧") == "07701234567"
+    assert digits_only("٠٧٧٠-١٢٣") == "0770123"
+
+
+def test_the_project_name_finding_is_reported_once(db, make_project):
+    """Two engines, one observation, one line on the screen.
+
+    `project_name_present` and `wrong_project_name` are the same finding, and
+    carry the same Arabic sentence. The report listed it twice because the
+    de-duplication is by code.
+    """
+    from app.services.qc_checks import CRITICAL_CODE_MAP
+
+    assert CRITICAL_CODE_MAP.get("project_name_present") == "wrong_project_name"
