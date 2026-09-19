@@ -521,3 +521,67 @@ def test_a_single_chunk_still_runs_as_one_pass(tmp_path, monkeypatch):
         duration=3.0,
     )
     assert calls == ["assemble:overlays"], "one pass keeps the plain label"
+
+
+def test_a_named_transition_is_actually_drawn():
+    """`concat_clips` took this argument from day one and never used it.
+
+    Every editing style names a transition — soft_dissolve, whip_pan — the
+    timeline stored it and the report printed it, and the filtergraph was a
+    plain `concat`. Every cut in every ad was hard, which is most of why a
+    reel of stills read as a slideshow.
+    """
+    from app.media.remix import xfade_effect
+
+    assert xfade_effect("soft_dissolve") == "fade"
+    assert xfade_effect("whip_pan") == "slideleft"
+    # A match cut IS a hard cut — two shots that line up. Not a dissolve.
+    assert xfade_effect("match_cut") is None
+    assert xfade_effect("cut") is None
+    assert xfade_effect(None) is None
+
+
+def test_a_dissolve_does_not_shorten_the_reel():
+    """The picture has to stay on the voice it was cut to.
+
+    An overlap of `d` normally eats `d` out of the running time, which would
+    slide every scene off the voice-over — and the captions are timed to that
+    voice. Each outgoing clip is padded by `d` first, so the dissolve consumes
+    the padding and the finished reel is the length it would have been with
+    hard cuts.
+    """
+    from app.media.remix import _xfade_chain
+
+    durations = [4.0, 5.0, 4.5, 6.0]
+    chain = _xfade_chain(len(durations), durations, "fade", 0.35)
+    text = " ".join(chain)
+    assert text.count("tpad") == len(durations) - 1, "every outgoing clip is padded"
+    # The offsets are the cumulative un-padded durations — that is what keeps
+    # the total the same.
+    for offset in ("offset=4.000", "offset=9.000", "offset=13.500"):
+        assert offset in text
+    assert chain[-1].endswith("[v]")
+
+
+def test_a_clip_too_short_for_its_dissolve_cuts_instead(tmp_path, monkeypatch):
+    """More dissolve than picture is worse than a cut, so it says so."""
+    from app.media import remix
+
+    class _Info:
+        duration_sec = 0.4
+        width = 1080
+        height = 1920
+        size_bytes = 1234
+
+    monkeypatch.setattr(remix, "probe_media", lambda _p: _Info())
+    calls = []
+    monkeypatch.setattr(remix, "run_ffmpeg", lambda args, **kw: calls.append(args))
+    for name in ("a.mp4", "b.mp4"):
+        (tmp_path / name).write_bytes(b"x")
+
+    result = remix.concat_clips([str(tmp_path / "a.mp4"), str(tmp_path / "b.mp4")],
+                                str(tmp_path / "out.mp4"),
+                                transition="soft_dissolve", transition_sec=0.35)
+    assert result["transition"] == "cut"
+    assert result["transition_requested"] == "soft_dissolve"
+    assert "xfade" not in " ".join(calls[0])

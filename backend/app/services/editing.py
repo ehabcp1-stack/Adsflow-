@@ -414,6 +414,7 @@ def assembly_spec_for(
         return None
     script = db.get(ScriptVersion, storyboard.script_version_id) if storyboard.script_version_id else None
     settings_ = {**DEFAULT_EDIT_SETTINGS, **(project.edit_settings or {}), **(overrides or {})}
+    style = style_config(project.editing_style)
     brand = _brand_layer(db, project)
     caption_style = style_for_template(
         settings_.get("caption_template", "bold_bar"),
@@ -439,6 +440,10 @@ def assembly_spec_for(
         voice_volume=float(settings_.get("voice_volume", 1.0)),
         music_volume=float(settings_.get("music_volume", 0.22)),
         duck_music_under_voice=bool(settings_.get("duck_music_under_voice", True)),
+        # The style has named a transition since the first version of this
+        # file; nothing drew it until now.
+        transition=str(settings_.get("transition") or style["transition"]),
+        transition_sec=float(settings_.get("transition_sec", 0.35)),
     )
 
 

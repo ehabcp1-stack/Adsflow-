@@ -69,6 +69,11 @@ class AssemblySpec:
     voice_volume: float = 1.0
     music_volume: float = 0.22
     duck_music_under_voice: bool = True
+    #: The editing style's scene transition, and how long it lasts. `remix.
+    #: concat_clips` draws it without changing the running time, so the picture
+    #: stays on the voice it was cut to.
+    transition: str = "cut"
+    transition_sec: float = 0.35
     width: int = OUT_WIDTH
     height: int = OUT_HEIGHT
     fps: int = OUT_FPS
@@ -196,7 +201,9 @@ def assemble_reel(spec: AssemblySpec, out_path: str, *,
 
     picture = str(Path(temp_dir) / "picture.mp4")
     concat_result = concat_clips(render_clips, picture, width=spec.width,
-                                 height=spec.height, fps=spec.fps)
+                                 height=spec.height, fps=spec.fps,
+                                 transition=spec.transition,
+                                 transition_sec=spec.transition_sec)
     duration = float(concat_result["duration_sec"] or 0.0)
     report["stages"]["picture"] = {**concat_result, "end_screen": bool(end_screen_info)}
 

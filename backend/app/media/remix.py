@@ -213,6 +213,62 @@ def extract_segment_thumbnail(source_path: str, out_path: str, at_sec: float,
         return None
 
 
+#: Editing-style transition names -> the FFmpeg `xfade` effect that draws them.
+#:
+#: `concat_clips` took a `transition` argument from the first day, recorded it
+#: in its report, and joined the clips with a plain `concat` regardless. Every
+#: editing style names one — soft_dissolve, whip_pan, match_cut — the timeline
+#: stored it, the report printed it, and every cut in every ad was hard. It is
+#: most of why a reel of stills reads as a slideshow rather than an edit.
+#:
+#: A match cut IS a hard cut — two shots that line up. It stays a cut here on
+#: purpose; what makes it a match is the framing, not a dissolve.
+XFADE_EFFECTS: Dict[str, str] = {
+    "soft_dissolve": "fade",
+    "dissolve": "fade",
+    "fade": "fade",
+    "fade_black": "fadeblack",
+    "whip_pan": "slideleft",
+    "whip_pan_right": "slideright",
+    "wipe": "wiperight",
+    "slide_up": "slideup",
+    "zoom_blur": "smoothleft",
+    "circle": "circleopen",
+}
+
+
+def xfade_effect(transition: Optional[str]) -> Optional[str]:
+    """The xfade effect for a style's transition name, or None for a cut."""
+    return XFADE_EFFECTS.get((transition or "").strip().lower())
+
+
+def _xfade_chain(count: int, durations: Sequence[float], effect: str, overlap: float) -> List[str]:
+    """Cross-fade the clips without shortening the reel.
+
+    An overlap of `d` seconds normally eats `d` out of the running time, which
+    would slide the picture off the voice-over — and the voice is what every
+    caption is timed against. So each outgoing clip is padded by `d` first
+    (its last frame held), and the dissolve consumes exactly that padding:
+    with offsets at the cumulative un-padded durations, the finished reel is
+    the same length it would have been with hard cuts, to the frame.
+    """
+    parts: List[str] = []
+    for index in range(count - 1):
+        parts.append(f"[v{index}]tpad=stop_mode=clone:stop_duration={overlap:.3f}[p{index}]")
+    parts.append(f"[p0]null[x0]")
+
+    cursor = 0.0
+    for index in range(1, count):
+        cursor += durations[index - 1]
+        source = f"[p{index}]" if index < count - 1 else f"[v{index}]"
+        out = f"[x{index}]" if index < count - 1 else "[v]"
+        parts.append(
+            f"[x{index - 1}]{source}xfade=transition={effect}"
+            f":duration={overlap:.3f}:offset={cursor:.3f}{out}"
+        )
+    return parts
+
+
 def concat_clips(clip_paths: Sequence[str], out_path: str, *, width: int = OUT_WIDTH,
                  height: int = OUT_HEIGHT, fps: int = OUT_FPS,
                  transition: str = "cut", transition_sec: float = 0.0) -> Dict[str, Any]:
@@ -233,15 +289,30 @@ def concat_clips(clip_paths: Sequence[str], out_path: str, *, width: int = OUT_W
         args += ["-i", clip]
 
     graph: List[str] = []
-    labels: List[str] = []
     for index in range(len(clips)):
         graph.append(
             f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
             f"crop={width}:{height},fps={fps},setsar=1,format=yuv420p[v{index}]"
         )
         graph.append(f"[{index}:a]aresample=48000,aformat=channel_layouts=stereo[a{index}]")
-        labels.append(f"[v{index}][a{index}]")
-    graph.append(f"{''.join(labels)}concat=n={len(clips)}:v=1:a=1[v][a]")
+
+    effect = xfade_effect(transition)
+    overlap = round(float(transition_sec or 0.0), 3)
+    if effect and overlap > 0 and len(clips) > 1:
+        durations = [probe_media(clip).duration_sec or 0.0 for clip in clips]
+        if all(d > overlap * 1.5 for d in durations):
+            graph += _xfade_chain(len(clips), durations, effect, overlap)
+            applied = transition
+        else:
+            # A clip barely longer than the dissolve would be more dissolve
+            # than picture. Cut instead, and say which happened.
+            graph.append(f"{''.join(f'[v{i}]' for i in range(len(clips)))}concat=n={len(clips)}:v=1:a=0[v]")
+            applied = "cut"
+    else:
+        graph.append(f"{''.join(f'[v{i}]' for i in range(len(clips)))}concat=n={len(clips)}:v=1:a=0[v]")
+        applied = "cut"
+
+    graph.append(f"{''.join(f'[a{i}]' for i in range(len(clips)))}concat=n={len(clips)}:v=0:a=1[a]")
 
     args += ["-filter_complex", ";".join(graph), "-map", "[v]", "-map", "[a]"]
     args += [*VIDEO_ENCODE, *AUDIO_ENCODE, out_path]
@@ -255,7 +326,9 @@ def concat_clips(clip_paths: Sequence[str], out_path: str, *, width: int = OUT_W
         "width": info.width,
         "height": info.height,
         "size_bytes": info.size_bytes,
-        "transition": transition,
+        "transition": applied,
+        "transition_requested": transition,
+        "transition_sec": overlap if applied != "cut" else 0.0,
     }
 
 

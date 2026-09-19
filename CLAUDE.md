@@ -246,6 +246,32 @@ token: Arabic runs right-to-left in the Arabic font, Latin/number runs
 left-to-right in the Latin font. Install `fonts-noto-core` (the Docker image
 does). Installing Cairo or Tajawal upgrades the look with no code change.
 
+### Transitions and movement are what make it an edit
+
+A reel of stills with hard cuts and a 6% zoom is a slideshow with a voice-over,
+and the customer said so. Two mechanisms were declared everywhere and drawn
+nowhere:
+
+- **`concat_clips` took a `transition` argument from day one, reported it, and
+  joined with a plain `concat`.** Every editing style names one
+  (`soft_dissolve`, `whip_pan`, `match_cut`), the timeline stored it, the
+  report printed it, and every cut in every ad was hard. It now draws the
+  transition with `xfade` — and **without shortening the reel**: an overlap of
+  `d` normally eats `d` of running time, which would slide the picture off the
+  voice it was cut to, so each outgoing clip is padded by `d` first and the
+  dissolve consumes the padding. Measured: 18.048s with cuts, 18.048s with a
+  dissolve, 18.048s with a whip pan. A clip too short to carry its own
+  dissolve falls back to a cut and says which it used.
+- **`ORIGINAL_PHOTO` was pinned to `controlled_zoom`**, a 6% creep. With half
+  the scenes on that method, half the reel barely moved. Photo scenes now go
+  through `motion.recommend_motion`, which keeps offer and price cards calm,
+  pushes in on the hook, travels vertically in a tall frame, and otherwise
+  walks `MOTION_ROTATION` by scene number so two neighbours never repeat.
+
+`text_animation` is the third of these — the storyboard picks between
+`fade_up`, `mask_reveal`, `typewriter` and `slide_in`, and nothing in
+`app/media/` reads it. Still true. Fix it the same way.
+
 ### The overlay burn is where the memory goes
 
 Every overlay enters the filtergraph as `-loop 1 -i <png>`: its own decoder

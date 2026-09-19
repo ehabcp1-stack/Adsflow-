@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from app.core.enums import ProductionMethod
 from app.media.assemble import make_thumbnail
 from app.media.ffmpeg import OUT_HEIGHT, OUT_WIDTH, render_enabled
-from app.media.motion import recommend_motion, render_photo_motion
+from app.media.motion import MOTION_PRESETS, recommend_motion, render_photo_motion
 from app.media.motion_graphics import render_offer_scene
 from app.media.probe import probe_media
 from app.media.remix import RemixOp, apply_remix, op_from_dict
@@ -152,21 +152,29 @@ def render_local_scene(db: Session, project: Project, scene: Scene) -> Dict[str,
         elif source and probe_media(source).kind == "image":
             info = probe_media(source)
             analysis = (asset.analysis or {}) if asset else {}
-            if method == ProductionMethod.ORIGINAL_PHOTO.value:
-                motion = "controlled_zoom"  # held, not frozen — a frozen frame reads as a bug
-            else:
-                motion = (
-                    scene.camera_movement
-                    if scene.camera_movement in {"push_in", "pull_out", "pan_left", "pan_right",
-                                                 "tilt_up", "ken_burns", "controlled_zoom", "parallax"}
-                    else recommend_motion(
-                        index=scene.scene_number - 1,
-                        orientation=info.orientation,
-                        is_hook=scene.is_hook,
-                        purpose=scene.purpose or "",
-                        motion_potential=float(analysis.get("motion_potential", 0.6) or 0.6),
-                    )
+            # Every photo scene gets a real move, chosen for where it sits.
+            #
+            # `ORIGINAL_PHOTO` used to be pinned to `controlled_zoom` — a 6%
+            # creep, written as "held, not frozen". With two of four scenes on
+            # that method, half the reel barely moved, and every cut between
+            # them was hard. That is the difference between an edit and a
+            # slideshow, and the user named it before this changed.
+            #
+            # `recommend_motion` already knows the rules that matter: an offer
+            # or price card stays calm, the hook pushes in, a tall frame
+            # travels vertically, and everything else walks the rotation by
+            # scene number so two neighbours never repeat a move.
+            motion = (
+                scene.camera_movement
+                if scene.camera_movement in MOTION_PRESETS
+                else recommend_motion(
+                    index=scene.scene_number - 1,
+                    orientation=info.orientation,
+                    is_hook=scene.is_hook,
+                    purpose=scene.purpose or "",
+                    motion_potential=float(analysis.get("motion_potential", 0.6) or 0.6),
                 )
+            )
             record = media_bridge.render_to_storage(
                 key,
                 lambda target: render_photo_motion(
