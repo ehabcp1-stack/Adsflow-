@@ -558,9 +558,33 @@ def render_caption_png(
             x += run.width + style.word_gap_px
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    # Crop to what was actually drawn, and tell the caller where it sat.
+    #
+    # A caption card is a bar in the lower third; the rest of a 1080x1920
+    # frame is transparent. Saved full-frame, every one of them enters the
+    # overlay filtergraph as `-loop 1 -i` — a whole-frame RGBA decoder and
+    # buffer, all of them alive at once. Measured on a 19s reel: 8 overlays
+    # peaked at 638MB, 19 at 1.18GB, 35 at 1.97GB — about 44MB per input,
+    # linear. Word-level captions make one frame per word, so a real reel
+    # reaches fifty-odd inputs and the container's OOM killer takes FFmpeg
+    # out mid-burn. That is `assemble:overlays failed (exit -9)`.
+    #
+    # Cropping does not change a pixel of the result: the same card is drawn
+    # at the same place, from a buffer a fraction of the size.
+    box = image.getbbox()
+    offset_x, offset_y = (box[0], box[1]) if box else (0, 0)
+    if box:
+        image = image.crop(box)
     image.save(out_path, "PNG", optimize=True)
     return {
         "path": out_path,
+        # Where to overlay the cropped card. Every other measurement below
+        # stays in full-frame coordinates, because that is what the safe-zone
+        # check and the QC report mean by "where the caption is".
+        "offset_x": offset_x,
+        "offset_y": offset_y,
+        "png_width": image.width,
+        "png_height": image.height,
         "lines": lines,
         "line_count": len(lines),
         "arabic_font": arabic_path,

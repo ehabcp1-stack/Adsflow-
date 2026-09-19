@@ -246,6 +246,40 @@ token: Arabic runs right-to-left in the Arabic font, Latin/number runs
 left-to-right in the Latin font. Install `fonts-noto-core` (the Docker image
 does). Installing Cairo or Tajawal upgrades the look with no code change.
 
+### The overlay burn is where the memory goes
+
+Every overlay enters the filtergraph as `-loop 1 -i <png>`: its own decoder
+and RGBA buffer, all of them alive at once. This stage's memory is **linear in
+the overlay count**, and word-level captions make one overlay per word, so the
+count follows the script. Measured peak RSS of the FFmpeg child on a 19s
+1080x1920 reel:
+
+| inputs | full-frame PNGs | cropped PNGs |
+|---|---|---|
+| 10 | 638 MB / 27.6s | 308 MB / 9.8s |
+| 46 | 1973 MB / 91.6s | 824 MB / 35.6s |
+| 70 | ~2.9 GB (extrapolated) | 1169 MB / 52.0s |
+
+Live, that was `assemble:overlays failed (exit -9)` — FFmpeg SIGKILLed
+mid-burn with four real scene clips ready, and the reel came back a
+placeholder.
+
+Two rules follow, and both are load-bearing:
+
+- **A caption PNG is cropped to the card that was drawn** (`captions.py`
+  returns `offset_x`/`offset_y`, and the overlay is placed there). A caption
+  is a bar in the lower third; saving it full-frame costs a whole 1080x1920
+  RGBA buffer per word. Cropping took the slope from ~37 MB to ~14 MB per
+  input **and produces the identical file** — verified md5-for-md5 against the
+  full-frame render, PSNR inf. Every other measurement (`block_top`,
+  `within_safe_zone`) stays in full-frame coordinates, because that is what
+  "where the caption is" means to the safe-zone check and to QC.
+- **The burn is split into passes of `assemble.OVERLAY_CHUNK`.** Cropping
+  lowers the slope; only chunking gives the stage a ceiling. 30 overlays in
+  one pass is 894 MB; in four passes, 435 MB for 16% more time, at PSNR 53.6
+  dB against the single-pass render — the extra intermediate encode, not a
+  visible change. Only the final pass uses the delivery encode.
+
 ### Voice-first timing — the order is a constraint, not a preference
 
 Captions are timed against the **measured** voice track (`media/align.py`),

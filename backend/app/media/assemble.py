@@ -90,17 +90,71 @@ def _still_to_clip(image_path: str, out_path: str, duration: float, *,
     return out_path
 
 
+#: How many overlays go into one FFmpeg invocation.
+#:
+#: Every overlay is a `-loop 1 -i <png>` — its own decoder and RGBA buffer,
+#: and they are all alive at once, so the memory of this stage is linear in
+#: the number of overlays. Measured on a 19s 1080x1920 reel (peak RSS of the
+#: FFmpeg child):
+#:
+#:     inputs   full-frame PNGs      cropped PNGs
+#:     10       638 MB / 27.6s       308 MB / 9.8s
+#:     46       1973 MB / 91.6s      824 MB / 35.6s
+#:     70       ~2.9 GB (extrap.)    1169 MB / 52.0s
+#:
+#: Cropping each caption to the card that was drawn (see `media/captions.py`)
+#: took the slope from ~37 MB to ~14 MB per input. That is most of the fix,
+#: and it changes nothing about the picture — the cropped render is the same
+#: file, md5 for md5.
+#:
+#: It is not all of it. Word-level captions make one overlay per word, so the
+#: count follows the script, and nothing stops a longer one from climbing back
+#: out of whatever the container will give us. A burn split into passes has a
+#: ceiling instead of a slope. Measured on the same reel, 30 overlays:
+#:
+#:     one pass       894.6 MB / 32.7s
+#:     four passes    435.2 MB / 37.8s     PSNR 53.6 dB against the one-pass
+#:
+#: Half the memory for a sixth more time, and a difference no one can see —
+#: 53 dB is the extra intermediate encode, not a visible change. Twelve keeps
+#: the ceiling near 500 MB whatever the script length turns out to be.
+OVERLAY_CHUNK = 12
+
+
 def _burn_overlays(picture_path: str, overlays: Sequence[TimedOverlay], out_path: str,
                    *, duration: float) -> str:
+    """Burn the overlays on, in as few passes as the memory ceiling allows."""
     if not overlays:
         shutil.copyfile(picture_path, out_path)
         return out_path
-    graph, inputs = build_overlay_graph(overlays, base_label="0:v", out_label="vout")
+
+    chunks = [list(overlays[i:i + OVERLAY_CHUNK]) for i in range(0, len(overlays), OVERLAY_CHUNK)]
     ensure_parent(out_path)
-    args = ["-i", picture_path, *inputs,
-            "-filter_complex", graph, "-map", "[vout]", "-map", "0:a?",
-            "-t", f"{duration:.3f}", *VIDEO_ENCODE, "-c:a", "copy", out_path]
-    run_ffmpeg(args, label="assemble:overlays", timeout=900)
+    source = picture_path
+    staging: List[str] = []
+
+    for number, chunk in enumerate(chunks):
+        last = number == len(chunks) - 1
+        target = out_path if last else f"{out_path}.pass{number}.mp4"
+        graph, inputs = build_overlay_graph(chunk, base_label="0:v", out_label="vout")
+        # Only the final pass gets the delivery encode; the ones feeding
+        # another pass use the fast intermediate settings, as everywhere else
+        # in this package.
+        encode = VIDEO_ENCODE if last else INTERMEDIATE_VIDEO_ENCODE
+        args = ["-i", source, *inputs,
+                "-filter_complex", graph, "-map", "[vout]", "-map", "0:a?",
+                "-t", f"{duration:.3f}", *encode, "-c:a", "copy", target]
+        run_ffmpeg(
+            args,
+            label="assemble:overlays" if len(chunks) == 1 else f"assemble:overlays[{number + 1}/{len(chunks)}]",
+            timeout=900,
+        )
+        if not last:
+            staging.append(target)
+        source = target
+
+    for leftover in staging:
+        Path(leftover).unlink(missing_ok=True)
     return out_path
 
 
@@ -186,8 +240,12 @@ def assemble_reel(spec: AssemblySpec, out_path: str, *,
             # highlight moves; fading every frame in and out cross-dissolves
             # two identical cards eight times a line, which reads as the text
             # blinking. Measured in the rendered file, not in the PNGs.
+            geometry = item.get("geometry") or {}
             overlays.append(TimedOverlay(
-                png=item["png"], start=start, end=end, x="0", y="0",
+                png=item["png"], start=start, end=end,
+                # The PNG is cropped to the card; this is where the card sat.
+                x=str(int(geometry.get("offset_x", 0))),
+                y=str(int(geometry.get("offset_y", 0))),
                 fade_in=None if item.get("cue_first", True) else 0.0,
                 fade_out=None if item.get("cue_last", True) else 0.0,
             ))

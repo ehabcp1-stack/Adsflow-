@@ -460,3 +460,64 @@ def test_render_enabled_follows_the_setting(monkeypatch):
 
     monkeypatch.setattr(settings, "ENABLE_LOCAL_RENDER", False)
     assert render_enabled() is False
+
+
+def test_the_overlay_burn_is_split_so_its_memory_has_a_ceiling(tmp_path, monkeypatch):
+    """One FFmpeg call per chunk, and no intermediates left behind.
+
+    Every overlay is a `-loop 1 -i <png>`, all alive at once, so this stage's
+    memory is linear in the overlay count — measured at ~14 MB per input after
+    cropping, on top of ~165 MB. Word-level captions make one overlay per
+    word, so the count follows the script: on the live server FFmpeg was
+    killed mid-burn and the reel came back a placeholder with
+    `assemble:overlays failed (exit -9)`.
+    """
+    from app.media import assemble
+    from app.media.overlays import TimedOverlay
+
+    calls: list = []
+
+    def fake_run(args, *, label, timeout=None):
+        calls.append({"label": label, "out": args[-1], "inputs": args.count("-loop")})
+        Path(args[-1]).write_bytes(b"x")
+        return ""
+
+    monkeypatch.setattr(assemble, "run_ffmpeg", fake_run)
+    monkeypatch.setattr(assemble, "OVERLAY_CHUNK", 4)
+
+    source = tmp_path / "picture.mp4"
+    source.write_bytes(b"x")
+    overlays = [TimedOverlay(png=f"{tmp_path}/o{i}.png", start=float(i), end=float(i) + 1)
+                for i in range(10)]
+    out = tmp_path / "burned.mp4"
+
+    assemble._burn_overlays(str(source), overlays, str(out), duration=10.0)
+
+    assert len(calls) == 3, "ten overlays in chunks of four is three passes"
+    assert [c["inputs"] for c in calls] == [4, 4, 2]
+    assert calls[-1]["out"] == str(out), "the last pass writes the real output"
+    # Intermediates are cleaned up; only the finished file survives.
+    assert not list(tmp_path.glob("*.pass*.mp4"))
+    assert out.exists()
+
+
+def test_a_single_chunk_still_runs_as_one_pass(tmp_path, monkeypatch):
+    """Nothing is re-encoded twice when it does not need to be."""
+    from app.media import assemble
+    from app.media.overlays import TimedOverlay
+
+    calls: list = []
+    monkeypatch.setattr(assemble, "run_ffmpeg",
+                        lambda args, *, label, timeout=None: (calls.append(label),
+                                                              Path(args[-1]).write_bytes(b"x"), "")[-1])
+    monkeypatch.setattr(assemble, "OVERLAY_CHUNK", 24)
+
+    source = tmp_path / "picture.mp4"
+    source.write_bytes(b"x")
+    assemble._burn_overlays(
+        str(source),
+        [TimedOverlay(png=f"{tmp_path}/o{i}.png", start=0.0, end=1.0) for i in range(3)],
+        str(tmp_path / "out.mp4"),
+        duration=3.0,
+    )
+    assert calls == ["assemble:overlays"], "one pass keeps the plain label"
