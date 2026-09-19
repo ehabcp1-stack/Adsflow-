@@ -346,7 +346,7 @@ def get_voice(project: Project = Depends(get_project), db: Session = Depends(get
         "selected_voice_profile_id": project.selected_voice_profile_id,
         "voice_locked": project.voice_locked,
         "voice_over_enabled": project.voice_over_enabled,
-        "sample_text": (script.hook if script else "هلا بيك، هذا مثال للصوت العراقي من أدفلو"),
+        "sample_text": script_service.spoken_hook(script),
         "timing": voice_service.voice_timing(db, project, script) if script else [],
         "pronunciation": voice_service.pronunciation_for_project(db, project),
         "director_notes": notes_for_stage(db, project, WorkflowStage.VOICE),
@@ -362,7 +362,7 @@ def preview_voice(
     if not profile:
         raise NotFound("Voice profile not found.", "الصوت غير موجود.")
     script = db.get(ScriptVersion, project.selected_script_id) if project.selected_script_id else None
-    text = payload.text or (script.hook if script else "هلا بيك من أدفلو")
+    text = payload.text or script_service.spoken_hook(script)
     result = voice_service.preview_voice(
         db, profile=profile, text=text, speed=payload.speed, energy=payload.energy, emotion=payload.emotion
     )

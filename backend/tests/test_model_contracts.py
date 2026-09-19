@@ -233,3 +233,102 @@ def test_a_placeholder_reel_is_named_as_one_before_anything_else(db, make_projec
     assert PLACEHOLDER_ISSUE["code"] in CRITICAL_CODES
     assert PLACEHOLDER_ISSUE["severity"] == "critical"
     assert "بديل" in PLACEHOLDER_ISSUE["message_ar"]
+
+
+# --------------------------------------------------------------------------
+# Line roles — the same disease, heard rather than seen
+# --------------------------------------------------------------------------
+#: The roles on the live project's selected script, verbatim.
+LIVE_ROLES = ["narrator", "narrator", "narrator", "narrator"]
+LIVE_LINES = [
+    {"index": 0, "role": "narrator", "voice_line": "تدور على بيت بسعر يناسبك؟"},
+    {"index": 1, "role": "narrator", "voice_line": "وحدات ١٥٠ متر بأقساط مريحة"},
+    {"index": 2, "role": "narrator", "voice_line": "تسليم أول مرحلة خلال ٦ أشهر"},
+    {"index": 3, "role": "narrator", "voice_line": "احجز موعد زيارة اليوم"},
+]
+
+
+def test_the_script_contract_refuses_a_role_nothing_reads():
+    line = {"index": 0, "role": "narrator", "voice_line": "x",
+            "on_screen_text": "x", "start": 0.0, "end": 1.0}
+    payload = {"hook": "h", "body": "b", "cta": "c", "voice_over_text": "v", "lines": [line],
+               "dialect_preset": "iraqi_professional", "total_duration_sec": 15.0,
+               "word_count": 3, "score": 90.0}
+    ok, _instance, errors = validate_llm_json("script", payload)
+    assert not ok
+    assert any("narrator" in error for error in errors)
+
+
+def test_unlabelled_lines_still_produce_a_hook_a_body_and_a_cta():
+    """The live script had all four lines marked `narrator`.
+
+    Every one of `hook`, `body` and `cta` was derived by matching that word
+    exactly, so all three were stored empty while `voice_over_text` held the
+    whole script. In a reel the first line is the opening and the last is the
+    ask, whatever the writer called the rows.
+    """
+    from app.services.scripts import derive_parts, effective_roles
+
+    assert effective_roles(LIVE_LINES) == ["hook", "body", "body", "cta"]
+    hook, body, cta = derive_parts(LIVE_LINES)
+    assert hook == "تدور على بيت بسعر يناسبك؟"
+    assert cta == "احجز موعد زيارة اليوم"
+    assert "١٥٠" in body and "٦ أشهر" in body
+
+
+def test_explicit_roles_still_win():
+    from app.services.scripts import derive_parts
+
+    labelled = [
+        {"index": 0, "role": "body", "voice_line": "وسط"},
+        {"index": 1, "role": "hook", "voice_line": "افتتاحية"},
+        {"index": 2, "role": "cta", "voice_line": "اتصل"},
+    ]
+    assert derive_parts(labelled) == ("افتتاحية", "وسط", "اتصل")
+
+
+def test_the_voice_preview_is_never_handed_an_empty_string(db, make_project):
+    """What the user actually heard: a preview that "cuts off straight away".
+
+    It never started. Both voice endpoints read `script.hook` with a fallback
+    that only fired when there was no script at all, so a script whose hook
+    had been derived as empty passed "" to the synthesizer.
+    """
+    from app.models import ScriptVersion
+    from app.services.scripts import spoken_hook
+
+    project = make_project(name="معاينة صوت")
+    broken = ScriptVersion(
+        project_id=project.id, version=3, variant="primary",
+        hook="", body="", cta="",
+        voice_over_text=" ".join(line["voice_line"] for line in LIVE_LINES),
+        lines=LIVE_LINES, dialect_preset="iraqi_professional",
+        total_duration_sec=15.0, word_count=20, score=88.0,
+    )
+    db.add(broken)
+    db.flush()
+
+    assert spoken_hook(broken).strip() == "تدور على بيت بسعر يناسبك؟"
+    assert spoken_hook(None).strip()
+
+    # And a version with nothing at all still gets a sentence, not silence.
+    empty = ScriptVersion(
+        project_id=project.id, version=4, variant="primary",
+        hook="", body="", cta="", voice_over_text="", lines=[],
+        dialect_preset="iraqi_professional", total_duration_sec=15.0,
+        word_count=0, score=0.0,
+    )
+    assert spoken_hook(empty).strip()
+
+
+def test_a_refinement_aimed_at_one_line_still_finds_it():
+    """`stronger_hook` and `change_cta` compared `role` directly.
+
+    With unfamiliar roles both skipped every line, so the button ran, spent a
+    model call on nothing, and produced a new version identical to the old.
+    """
+    from app.services.scripts import effective_roles
+
+    roles = effective_roles(LIVE_LINES)
+    assert roles.count("hook") == 1 and roles.count("cta") == 1
+    assert roles[0] == "hook" and roles[-1] == "cta"

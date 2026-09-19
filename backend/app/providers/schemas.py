@@ -80,6 +80,23 @@ class ScriptLine(BaseModel):
     start: float
     end: float
 
+    @field_validator("role")
+    @classmethod
+    def _role_must_be_one_of_three(cls, value: str) -> str:
+        """A reel is an opening, a middle and an ask. Nothing else is a role.
+
+        This was a free string, and six branches across three services compare
+        it exactly. A live script came back with every line marked `narrator`,
+        so `hook`, `body` and `cta` were all derived as empty — and the voice
+        preview, which speaks `script.hook`, was handed an empty string and
+        produced silence. The user heard a preview that "cuts off straight
+        away"; it had never started.
+        """
+        text = (value or "").strip().lower()
+        if text not in ("hook", "body", "cta"):
+            raise ValueError(f"role must be one of ('hook', 'body', 'cta'); got {value!r}")
+        return text
+
 
 class OnScreenTextEntry(BaseModel):
     index: int

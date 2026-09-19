@@ -183,6 +183,17 @@ step recognised, and every step reported success. So:
 - **Units are part of the contract.** `QCScores` requires all six weighted
   dimensions, 0–100, and converts a wholly 0–1 answer; a mixed-scale answer is
   a contradiction and fails rather than being guessed at.
+- **`ScriptLine.role` is `hook | body | cta`** — six branches across three
+  services compare it exactly. A live script marked every line `narrator`, so
+  `hook`, `body` and `cta` were all derived empty; the voice preview speaks
+  `script.hook`, was handed `""`, and produced silence the user reported as a
+  preview that "cuts off straight away". `scripts.effective_roles()` is the
+  one place that answers "which line is the hook", and it falls back to
+  position — first line opens, last line asks — so a stored version written
+  before this can still be read.
+- **A derived field never silently becomes empty.** `""` as the fallback of a
+  `next(...)` is how all three of those fields died quietly. Derive from what
+  is there, or raise.
 
 **Prompt Compiler rule:** the user-facing script is *never* sent to a video
 provider. `providers/prompt_compiler.py` compiles structured production prompts

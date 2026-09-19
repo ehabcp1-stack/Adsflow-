@@ -147,10 +147,11 @@ def refine_script(
     llm = get_llm()
     lines = [dict(line) for line in (script.lines or [])]
 
-    for line in lines:
-        if action == "stronger_hook" and line.get("role") != "hook":
+    roles = effective_roles(lines)
+    for line, role in zip(lines, roles):
+        if action == "stronger_hook" and role != "hook":
             continue
-        if action == "change_cta" and line.get("role") != "cta":
+        if action == "change_cta" and role != "cta":
             continue
         if action == "change_cta":
             line["voice_line"] = new_cta or line["voice_line"]
@@ -162,14 +163,15 @@ def refine_script(
     lines = _retime(lines, script.total_duration_sec)
     voice_over = " ".join(line["voice_line"] for line in lines)
 
+    hook, body, cta = derive_parts(lines)
     new_version = ScriptVersion(
         project_id=project.id,
         concept_id=script.concept_id,  # concept is preserved
         version=script.version + 1,
         variant=script.variant,
-        hook=next((line["voice_line"] for line in lines if line.get("role") == "hook"), script.hook),
-        body=" ".join(line["voice_line"] for line in lines if line.get("role") == "body"),
-        cta=next((line["voice_line"] for line in lines if line.get("role") == "cta"), script.cta),
+        hook=hook or script.hook,
+        body=body or script.body,
+        cta=cta or script.cta,
         voice_over_text=voice_over,
         on_screen_text=[
             {"index": line["index"], "text": line["on_screen_text"], "start": line["start"], "end": line["end"]}
@@ -194,14 +196,15 @@ def update_script_text(db: Session, project: Project, script: ScriptVersion, lin
     """Manual edit from the Script screen → new version, concept preserved."""
     normalized = _retime([dict(line) for line in lines], script.total_duration_sec)
     voice_over = " ".join(line["voice_line"] for line in normalized)
+    hook, body, cta = derive_parts(normalized)
     new_version = ScriptVersion(
         project_id=project.id,
         concept_id=script.concept_id,
         version=script.version + 1,
         variant=script.variant,
-        hook=next((line["voice_line"] for line in normalized if line.get("role") == "hook"), ""),
-        body=" ".join(line["voice_line"] for line in normalized if line.get("role") == "body"),
-        cta=next((line["voice_line"] for line in normalized if line.get("role") == "cta"), ""),
+        hook=hook,
+        body=body,
+        cta=cta,
         voice_over_text=voice_over,
         on_screen_text=[
             {"index": line["index"], "text": line["on_screen_text"], "start": line["start"], "end": line["end"]}
@@ -221,6 +224,85 @@ def update_script_text(db: Session, project: Project, script: ScriptVersion, lin
     if script.is_selected:
         select_script(db, project, new_version.id)
     return new_version
+
+
+#: The only three roles a spoken line can have. A reel is an opening, a middle
+#: and an ask; everything downstream is written against exactly these.
+LINE_ROLES = ("hook", "body", "cta")
+
+
+def derive_parts(lines: List[Dict[str, Any]]) -> tuple:
+    """Hook, body and CTA from the lines — and never three empty strings.
+
+    These three fields used to be picked by matching `role` exactly, with `""`
+    as the fallback. A live script came back with every line marked
+    `narrator`, so all three matched nothing and the stored version had an
+    empty hook, an empty body and an empty CTA while `voice_over_text` held
+    the full 200 characters. Nothing looked broken on the script screen,
+    because the screen renders the lines.
+
+    What broke was three rooms away: the voice preview speaks `script.hook`,
+    so it was handed an empty string and produced a moment of nothing. The
+    user heard a preview that "cuts off straight away" — it never started.
+
+    So position decides when the labels do not. In a fifteen-second reel the
+    first line is the opening and the last line is the ask; that is what those
+    words mean, whatever the writer called the rows. An explicit role still
+    wins when it is there.
+    """
+    roles = effective_roles(lines)
+    parts = {role: [] for role in LINE_ROLES}
+    for line, role in zip(lines or [], roles):
+        text = (line or {}).get("voice_line", "").strip()
+        if text:
+            parts[role].append(text)
+    return (
+        parts["hook"][0] if parts["hook"] else "",
+        " ".join(parts["body"]),
+        parts["cta"][-1] if parts["cta"] else "",
+    )
+
+
+def effective_roles(lines: List[Dict[str, Any]]) -> List[str]:
+    """One of `LINE_ROLES` per line, whatever the writer wrote in `role`.
+
+    Returned per position rather than per line, so callers that need to act on
+    "the hook line" — `refine_script`'s stronger-hook and change-CTA passes —
+    ask the same question this module answers everywhere else. Those two used
+    to compare `role` directly and skip every line when the roles were
+    unfamiliar, which made both refinements quietly do nothing at all.
+    """
+    given = [((line or {}).get("role") or "").strip().lower() for line in (lines or [])]
+    if any(role in LINE_ROLES for role in given):
+        # Partially labelled is still labelled: trust what is there, and read
+        # anything unrecognised as body rather than discarding the line.
+        return [role if role in LINE_ROLES else "body" for role in given]
+
+    count = len(given)
+    if count == 0:
+        return []
+    if count == 1:
+        return ["hook"]
+    return ["hook"] + ["body"] * (count - 2) + ["cta"]
+
+
+def spoken_hook(script: Optional[ScriptVersion]) -> str:
+    """The line to speak when something needs one line — never an empty one.
+
+    Both voice endpoints read `script.hook` with a fallback that only fired
+    when there was no script at all, so a script whose hook had been derived
+    as empty passed `""` to the synthesizer. Falling back through the lines
+    also repairs versions already stored that way, without a migration.
+    """
+    if script is None:
+        return "هلا بيك، هذا مثال للصوت العراقي من أدفلو"
+    if (script.hook or "").strip():
+        return script.hook
+    hook, _body, _cta = derive_parts(script.lines or [])
+    if hook.strip():
+        return hook
+    spoken = (script.voice_over_text or "").strip()
+    return spoken.split("،")[0] if spoken else "هلا بيك، هذا مثال للصوت العراقي من أدفلو"
 
 
 def script_payload(script: ScriptVersion) -> Dict[str, Any]:
