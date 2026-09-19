@@ -92,8 +92,15 @@ def choose_method(
     fidelity_locked: bool = True,
 ) -> tuple[str, str]:
     """Scene source priority: original video → original photo → photo motion → AI image → AI video."""
-    if requested_method:
-        return requested_method, "اختيار يدوي من المستخدم"
+    # `requested_method` arrives from the storyboard payload, which is written
+    # by a model — not, as the reason string used to claim, by the user. It
+    # overrode the entire priority ladder, including with values that name no
+    # method this system implements. An unknown one is ignored here and the
+    # ladder decides, so a scene can never be planned as something nothing
+    # knows how to produce. The schema rejects these at the boundary; this is
+    # the second lock, for storyboards written before it existed.
+    if requested_method and requested_method in {method.value for method in ProductionMethod}:
+        return requested_method, "طريقة محددة مسبقاً للمشهد"
     if has_original_video:
         return ProductionMethod.ORIGINAL_VIDEO.value, "أكو فيديو أصلي يغطي المشهد — بدون كلفة توليد"
     if has_original_photo:

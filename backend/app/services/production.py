@@ -4,6 +4,7 @@ Independent jobs, critical scenes first, cost-checked at every paid step.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
@@ -24,7 +25,16 @@ from app.core.enums import (
 )
 from app.core.errors import NotFound
 from app.media.align import align_words, group_into_cues
-from app.models import GenerationJob, Project, ProviderRun, Scene, ScriptVersion, Storyboard, VoiceProfile
+from app.models import (
+    Asset,
+    GenerationJob,
+    Project,
+    ProviderRun,
+    Scene,
+    ScriptVersion,
+    Storyboard,
+    VoiceProfile,
+)
 from app.providers import model_router
 from app.providers.model_router import model_candidates
 from app.providers.quality_judge import judge_scene, plan_retry
@@ -34,6 +44,8 @@ from app.services import costs as cost_service
 from app.services.jobs import create_job, dispatch, register_handler, set_progress
 from app.services.scene_render import LOCAL_METHODS, render_local_scene
 from app.services.storyboards import active_storyboard
+
+log = logging.getLogger("adflow.production")
 
 
 def _scene_job_type(scene: Scene) -> str:
@@ -251,11 +263,60 @@ def _produce_keyframe(
     }
 
 
+def repair_production_method(db: Session, project: Project, scene: Scene) -> Optional[str]:
+    """Re-derive a scene's production method when it names nothing we build.
+
+    Storyboards written before `schemas.ScenePlan` validated this field can
+    hold anything the model wrote — `kenburns_zoom_on_photo` for a scene that
+    is plainly photo motion. Such a scene is not merely mislabelled: it misses
+    `LOCAL_METHODS`, skips the free FFmpeg path and is handed to the image
+    provider, which returns a still. Four of them made a reel with no moving
+    picture in it.
+
+    Regenerating the storyboard would fix the label and throw away the
+    approvals with it, so the method is re-derived from what the scene
+    actually has — its own asset — through the same router that should have
+    chosen it in the first place. Returns the old value when it changed one,
+    so the caller can say so out loud rather than repairing in silence.
+    """
+    current = scene.production_method
+    if current in {method.value for method in ProductionMethod}:
+        return None
+
+    asset = db.get(Asset, scene.selected_asset_id) if scene.selected_asset_id else None
+    method, _reason = model_router.choose_method(
+        has_original_video=bool(asset and asset.kind == "video"),
+        has_original_photo=bool(asset and asset.kind in ("image", "reference")),
+        is_hero=bool(scene.is_hero),
+        is_hook=bool(scene.is_hook),
+        requested_method=None,
+        quality_level=project.quality_level,
+        fidelity_locked=project.architecture_fidelity_lock,
+    )
+    scene.production_method = method
+    log.warning(
+        "scene %s carried unknown production_method %r; re-derived as %r",
+        scene.id, current, method,
+    )
+    return current
+
+
 def _produce_scene(db: Session, job: GenerationJob) -> Dict[str, Any]:
     scene = db.get(Scene, job.scene_id)
     project = db.get(Project, job.project_id)
     if not scene or not project:
         raise ValueError("Scene or project missing")
+
+    repaired_from = repair_production_method(db, project, scene)
+    if scene.production_method not in {method.value for method in ProductionMethod}:
+        # Unreachable via the repair above, and deliberately loud if it ever
+        # is: the old `else` branch treated every unrecognised method as "some
+        # kind of image", which is how a method nothing implements still
+        # produced a file, a passing quality score and a completed job.
+        raise ValueError(
+            f"Scene {scene.id} has production method {scene.production_method!r}, "
+            "which this system does not produce."
+        )
 
     attempt = job.attempt
     prompt = dict(scene.compiled_prompt or {})

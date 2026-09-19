@@ -45,6 +45,29 @@ CRITICAL_CODES = {
     "missing_cta",
     "missing_audio",
     "unintelligible_voice",
+    "placeholder_render",
+}
+
+#: What a placeholder reel is, said once, in the words the user needs.
+#:
+#: Capping two dimensions at 60 was the whole of the old response, so a reel
+#: that contained no footage at all came back as "61 — needs fixing" beside a
+#: list of complaints about its resolution and its captions. Every one of them
+#: was true and none of them was the point: there was nothing to fix, because
+#: nothing had been made. The score is not the place to say that — a sentence
+#: is.
+PLACEHOLDER_ISSUE = {
+    "code": "placeholder_render",
+    "severity": "critical",
+    "message_en": (
+        "This is a placeholder reel, not a deliverable — production produced no "
+        "usable scene clips, so there was nothing to assemble."
+    ),
+    "message_ar": (
+        "هذا ملف بديل مو ريل حقيقي — الإنتاج ما طلّع ولا مقطع مشهد صالح، "
+        "فما كان أكو شي يتجمّع."
+    ),
+    "source": "deterministic",
 }
 
 
@@ -156,7 +179,11 @@ def run_qc(db: Session, project: Project, *, render: Optional[Render] = None) ->
         }
         for failure in deterministic["failures"]
     ]
-    issues = measured_issues + _critical_checks(project, script, brand, storyboard) + [
+    # First in the list, because it is the only thing worth reading when it is
+    # true: every other complaint below it is a complaint about a file nobody
+    # meant to deliver.
+    placeholder_issue = [dict(PLACEHOLDER_ISSUE)] if deterministic["placeholder_render"] else []
+    issues = placeholder_issue + measured_issues + _critical_checks(project, script, brand, storyboard) + [
         dict(item, severity=item.get("severity", "warning"), source="model")
         for item in llm_out.get("issues", [])
     ]

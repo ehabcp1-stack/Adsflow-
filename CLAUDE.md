@@ -146,6 +146,44 @@ Interfaces in `backend/app/providers/base.py`: `LLMProvider`, `ImageProvider`,
   budget. Quality levels: `economy | smart_premium (default) | maximum_quality`.
   Multi-model comparison is reserved for hook / hero / critical scenes only.
 
+### 6a. A contract that accepts anything is not a contract
+
+`providers/schemas.py` is where model output stops being text and starts being
+data, and every field a **branch** depends on must be closed there — an enum
+value, a required key, a stated range. Not "documented as"; validated as.
+
+This is not theory. `ScenePlan.production_method` was a free string and
+`QCResult.scores` was `Dict[str, float]`, and one live run produced:
+
+* a storyboard whose scenes were `kenburns_zoom_on_photo` and
+  `text_card_cta_overlay` — plausible, descriptive, in no enum anywhere.
+  Neither matched `LOCAL_METHODS`, so four scenes that should have been
+  rendered from the customer's own photo with FFmpeg for nothing went to the
+  image provider, which on that server is the mock. Four SVG stills, each
+  marked `passed` at quality 95 and `real_media: true`; assembly found no
+  clips and produced a placeholder reel;
+* a QC report in the model's own vocabulary on the model's own scale
+  (`dialect_authenticity: 0.92`, `overall: 0.68`), so five of the six weighted
+  dimensions silently took their 85/90 defaults — and the sixth,
+  `brand_consistency: 0`, meant nought *percent* and was read as nought out of
+  a hundred, deleting ten points of the final score.
+
+Nothing was broken. Every step did exactly what it was told with a value no
+step recognised, and every step reported success. So:
+
+- **Validate at the boundary, not at the branch.** A wrong answer caught in
+  `schemas.py` costs one repair attempt; the same answer caught nowhere costs
+  a production run and a reel.
+- **Never route an unrecognised value to a default branch.** `else: → image
+  provider` is how an unimplemented method still produced a file. Unknown
+  raises.
+- **`model_router.choose_method` honours a requested method only if it is a
+  real `ProductionMethod`** — that field comes from a model, whatever the
+  reason string used to claim.
+- **Units are part of the contract.** `QCScores` requires all six weighted
+  dimensions, 0–100, and converts a wholly 0–1 answer; a mixed-scale answer is
+  a contradiction and fails rather than being guessed at.
+
 **Prompt Compiler rule:** the user-facing script is *never* sent to a video
 provider. `providers/prompt_compiler.py` compiles structured production prompts
 (subject, environment, composition, camera, lens feel, movement, lighting,
@@ -350,6 +388,21 @@ existence, resolution, codec, audio track, loudness, captions actually drawn
 and inside the safe zone, CTA present, phone matching the Brand Kit, project
 name spoken — and a **measured failure outranks a model opinion**. A placeholder
 render can never score as a deliverable.
+
+Two rules about how those findings are *worded*, both learned the hard way:
+
+- **A failed check never prints the sentence for passing.** `_check()` carries
+  `fail_en`/`fail_ar` for every condition it asserts. Without them a reel with
+  no sound listed, in red, "الريل بيه مسار صوتي" — the reel has an audio
+  track — and the one panel the user must be able to trust said the opposite
+  of the finding. A check that interpolates its own measurement ("the frame is
+  540x960, it must be 1080x1920") reads correctly either way and is exempt;
+  `tests/test_model_contracts.py` enforces the distinction.
+- **A placeholder reel is named, not scored down.** Capping two dimensions at
+  60 left a reel containing no footage reading "61 — needs fixing" beside
+  complaints about its resolution: every one true, none of them the point.
+  `qc.PLACEHOLDER_ISSUE` is a critical issue, listed first, and the QC screen
+  leads with it.
 
 ---
 
@@ -556,3 +609,6 @@ of what the user is actually shown, not the generator's own optimism.
 - [ ] No paid video is bought before its keyframe is approved.
 - [ ] Captions are timed to the measured audio, never to the plan.
 - [ ] Monthly spend cap enforced; no silent downgrade to mocks.
+- [ ] Every model-written field a branch depends on is validated closed (§6a);
+      an unrecognised value raises rather than falling into a default branch.
+- [ ] A failing QC check prints what failed, never the sentence for passing.

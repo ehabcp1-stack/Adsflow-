@@ -295,6 +295,16 @@ export const dictionary = {
       review: 'يفضّل المراجعة',
       fix_required: 'يحتاج إصلاح',
       empty: 'ما تم الفحص بعد',
+      placeholder: 'هذا ملف بديل مو ريل حقيقي',
+      placeholderHint: 'الإنتاج ما طلّع مقاطع مشاهد صالحة، فما كان أكو شي يتجمّع. رجّع شغّل الإنتاج قبل ما تعتمد على هالفحص.',
+      dimensions: {
+        visual_quality: 'الجودة البصرية',
+        audio_voice: 'الصوت والتعليق',
+        arabic_quality: 'جودة العربي',
+        marketing_effectiveness: 'الفاعلية التسويقية',
+        brand_consistency: 'اتساق الهوية',
+        platform_fit: 'ملاءمة المنصة',
+      },
     },
     export: {
       title: 'التصدير',
@@ -556,6 +566,16 @@ export const dictionary = {
       criticalIssues: 'Critical issues', recommendations: 'Recommendations', autoFix: 'Auto fix',
       readyToExport: 'Ready to export', approveFinal: 'Approve final', approved: 'Approved',
       review: 'Review recommended', fix_required: 'Fix required', empty: 'Not checked yet',
+      placeholder: 'This is a placeholder reel, not a deliverable',
+      placeholderHint: 'Production produced no usable scene clips, so there was nothing to assemble. Run production again before reading anything into this report.',
+      dimensions: {
+        visual_quality: 'Visual quality',
+        audio_voice: 'Audio & voice',
+        arabic_quality: 'Arabic quality',
+        marketing_effectiveness: 'Marketing effectiveness',
+        brand_consistency: 'Brand consistency',
+        platform_fit: 'Platform fit',
+      },
     },
     export: {
       title: 'Export', master: 'Master', variants: 'Variants', exportAnyway: 'Export anyway', files: 'Files',

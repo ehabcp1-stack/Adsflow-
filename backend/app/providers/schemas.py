@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, Type
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from app.core.enums import ProductionMethod
 
 
 # --------------------------------------------------------------------------
@@ -139,6 +141,34 @@ class ScenePlan(BaseModel):
     is_hero: bool = False
     priority: int = 50
 
+    @field_validator("production_method")
+    @classmethod
+    def _method_must_exist(cls, value: str) -> str:
+        """A production method the code does not implement is not a plan.
+
+        This field used to be a free string, and it decided which branch
+        `production.__produce_scene` takes. A live storyboard came back with
+        `kenburns_zoom_on_photo` and `text_card_cta_overlay` — descriptive,
+        plausible, and in no enum anywhere. Neither matched `LOCAL_METHODS`,
+        so four scenes that should have been rendered from the customer's own
+        photo with FFmpeg at no cost went to the image provider instead,
+        which on that server is the mock. It wrote four SVG frames, marked
+        them `passed` at quality 95, assembly found no clips to join, and the
+        customer got a placeholder reel that QC then scored 61 out of 100.
+
+        Nothing along that path was broken. Every step did exactly what it
+        was told with a value no step recognised. So the value is checked
+        here, at the boundary, where a wrong answer is still just a failed
+        validation and costs one repair attempt.
+        """
+        allowed = {method.value for method in ProductionMethod}
+        text = (value or "").strip().lower()
+        if text not in allowed:
+            raise ValueError(
+                f"production_method must be one of {sorted(allowed)}; got {value!r}"
+            )
+        return text
+
 
 class StoryboardOut(BaseModel):
     """Output of the `storyboard` task."""
@@ -175,10 +205,73 @@ class QCRecommendation(BaseModel):
     impact: str
 
 
+#: The six dimensions `services/qc.WEIGHTS` actually weighs. Anything else a
+#: model volunteers is not a QC dimension, whatever it is called.
+QC_DIMENSIONS = (
+    "visual_quality",
+    "audio_voice",
+    "arabic_quality",
+    "marketing_effectiveness",
+    "brand_consistency",
+    "platform_fit",
+)
+
+
+class QCScores(BaseModel):
+    """The six weighted dimensions, each 0-100.
+
+    This was `Dict[str, float]`: any keys, any values. A live report came back
+    with the model's own vocabulary on its own scale —
+    `dialect_authenticity: 0.92`, `cta_clarity: 0.55`, `overall: 0.68` — none
+    of which is weighted, so five of the six real dimensions silently fell
+    back to their 85/90 defaults. The exception was `brand_consistency: 0`,
+    which *is* weighted: the model meant nought percent, the code read nought
+    out of a hundred, and ten points of the final score vanished into a units
+    mismatch. The screen then listed the invented names as rows scored 1 and
+    0, because 0.92 rounds to 1.
+
+    Extra keys are dropped rather than rejected — a model that adds a note of
+    its own should not fail the whole report — but they never reach the score
+    or the screen.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    visual_quality: float = Field(ge=0, le=100)
+    audio_voice: float = Field(ge=0, le=100)
+    arabic_quality: float = Field(ge=0, le=100)
+    marketing_effectiveness: float = Field(ge=0, le=100)
+    brand_consistency: float = Field(ge=0, le=100)
+    platform_fit: float = Field(ge=0, le=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _to_percent(cls, data: Any) -> Any:
+        """Accept a 0-1 answer and say so in the only unit we score in.
+
+        Asking for 0-100 does not stop a model answering 0.92, and 0.92 is
+        indistinguishable from a catastrophic 0.92/100 unless the whole set is
+        read together. Every value at or below 1 is the 0-1 scale — a real
+        report in which all six dimensions score one point out of a hundred
+        does not exist, and if it did, a placeholder check would already have
+        failed it. Anything mixed is left alone: that is a model disagreeing
+        with itself, and a failed validation says so better than a guess.
+        """
+        if not isinstance(data, dict):
+            return data
+        values = [v for k, v in data.items() if k in QC_DIMENSIONS and isinstance(v, (int, float))]
+        if values and all(0 <= float(v) <= 1 for v in values):
+            return {
+                key: (round(float(value) * 100, 1) if key in QC_DIMENSIONS and isinstance(value, (int, float)) else value)
+                for key, value in data.items()
+            }
+        return data
+
+
 class QCResult(BaseModel):
     """Output of the `qc` task."""
 
-    scores: Dict[str, float]
+    scores: QCScores
     issues: List[QCIssue] = Field(default_factory=list)
     recommendations: List[QCRecommendation] = Field(default_factory=list)
 

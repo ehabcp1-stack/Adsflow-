@@ -76,9 +76,24 @@ function QCView({ project, reloadProject }: { project: ProjectDetail; reloadProj
   }
 
   const verdictTone = report.verdict === 'approved' ? 'ok' : report.verdict === 'review' ? 'warn' : 'danger';
+  const weights = data?.weights ?? {};
+  // A reel assembled from no scene clips is not a draft to be improved — it is
+  // nothing. Saying so once, above everything, is worth more than the eleven
+  // true-but-beside-the-point complaints underneath it.
+  const isPlaceholder = (report.critical_issues ?? []).some((issue) => issue.code === 'placeholder_render');
 
   return (
     <div className="space-y-5">
+      {isPlaceholder ? (
+        <div className="flex items-start gap-2.5 rounded-2xl border border-danger/25 bg-danger/[0.07] px-4 py-3">
+          <AlertTriangle className="mt-0.5 h-4.5 w-4.5 shrink-0 text-danger" />
+          <div>
+            <p className="text-[14px] font-semibold text-danger">{t.qc.placeholder}</p>
+            <p className="mt-0.5 text-[12.5px] text-ink-soft">{t.qc.placeholderHint}</p>
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid gap-5 lg:grid-cols-[280px_minmax(0,1fr)]">
         <Card className="flex flex-col items-center justify-center text-center">
           <ScoreRing value={report.total_score} size={120} label={t.qc.finalScore} />
@@ -102,19 +117,29 @@ function QCView({ project, reloadProject }: { project: ProjectDetail; reloadProj
 
         <Card>
           <CardTitle>{t.common.score}</CardTitle>
+          {/* Weighted dimensions only, in weight order. The table used to
+              render whatever `scores` happened to contain, so a model that
+              answered in its own vocabulary — `cta_clarity`, `overall` — put
+              rows on this screen that count for nothing, carry no weight, and
+              were scored 1 because the model answered 0-1 while the bar reads
+              0-100. Six dimensions are weighed; six are shown. */}
           <div className="space-y-3">
-            {Object.entries(report.scores).map(([key, value]) => (
-              <div key={key}>
-                <div className="mb-1 flex items-center justify-between text-[12.5px]">
-                  <span className="text-ink-soft">
-                    {key.replace(/_/g, ' ')}
-                    <span className="ltr-nums ms-1.5 text-ink-faint">×{report.weights[key] ?? 0}</span>
-                  </span>
-                  <span className="ltr-nums font-medium text-ink">{num(Math.round(value))}</span>
+            {Object.entries(weights).map(([key, weight]) => {
+              const value = report.scores[key];
+              if (value === undefined) return null;
+              return (
+                <div key={key}>
+                  <div className="mb-1 flex items-center justify-between text-[12.5px]">
+                    <span className="text-ink-soft">
+                      {t.qc.dimensions[key as keyof typeof t.qc.dimensions] ?? key.replace(/_/g, ' ')}
+                      <span className="ltr-nums ms-1.5 text-ink-faint">×{weight}</span>
+                    </span>
+                    <span className="ltr-nums font-medium text-ink">{num(Math.round(value))}</span>
+                  </div>
+                  <Progress value={value} tone={value >= 90 ? 'ok' : value >= 85 ? 'warn' : 'danger'} />
                 </div>
-                <Progress value={value} tone={value >= 90 ? 'ok' : value >= 85 ? 'warn' : 'danger'} />
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
       </div>

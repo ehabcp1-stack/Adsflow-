@@ -48,10 +48,25 @@ def digits_only(text: str) -> str:
 
 
 def _check(code: str, passed: bool, severity: str, en: str, ar: str,
-           **extra: Any) -> Dict[str, Any]:
+           *, fail_en: str = "", fail_ar: str = "", **extra: Any) -> Dict[str, Any]:
+    """One measurement, and a sentence for whichever way it went.
+
+    This used to carry a single message, written in the affirmative, and show
+    it whether the check passed or failed. So a reel with no sound listed, in
+    red, "الريل بيه مسار صوتي" — the reel has an audio track — and a reel with
+    no call to action said it had one. The failures panel is the one place in
+    the product where the user has to be able to trust the words, and it was
+    printing the opposite of the finding.
+
+    A check whose message already carries the measurement ("the frame is
+    540x960 and must be 1080x1920") reads correctly either way and passes no
+    `fail_*`. Every check that states a condition passes both.
+    """
     return {"code": code, "passed": passed,
             "severity": "info" if passed else severity,
-            "message_en": en, "message_ar": ar, **extra}
+            "message_en": en if passed or not fail_en else fail_en,
+            "message_ar": ar if passed or not fail_ar else fail_ar,
+            **extra}
 
 
 def file_checks(render: Render, *, expected_duration: Optional[float] = None) -> List[Dict[str, Any]]:
@@ -67,6 +82,8 @@ def file_checks(render: Render, *, expected_duration: Optional[float] = None) ->
     checks.append(_check(
         "output_exists", bool(info.ok), "critical",
         "Rendered file is readable.", "ملف المونتاج يفتح بشكل سليم.",
+        fail_en="The rendered file could not be read.",
+        fail_ar="ملف المونتاج ما ينفتح — الملف تالف أو ناقص.",
         detail=info.error,
     ))
     if not info.ok:
@@ -76,6 +93,8 @@ def file_checks(render: Render, *, expected_duration: Optional[float] = None) ->
     checks.append(_check(
         "container_is_video", is_video, "critical",
         "Output is a real video file.", "المخرج فيديو حقيقي.",
+        fail_en="The output is not a video file.",
+        fail_ar="المخرج مو ملف فيديو.",
         detail=info.kind,
     ))
     checks.append(_check(
@@ -94,6 +113,8 @@ def file_checks(render: Render, *, expected_duration: Optional[float] = None) ->
     checks.append(_check(
         "has_audio_track", bool(info.has_audio), "critical",
         "The reel has an audio track.", "الريل بيه مسار صوتي.",
+        fail_en="The reel has no audio track at all.",
+        fail_ar="الريل بدون مسار صوتي أبداً.",
     ))
     if expected_duration:
         drift = abs((info.duration_sec or 0) - expected_duration)
@@ -106,6 +127,8 @@ def file_checks(render: Render, *, expected_duration: Optional[float] = None) ->
     checks.append(_check(
         "file_not_empty", (info.size_bytes or 0) > 50_000, "critical",
         "Rendered file has real content.", "حجم الملف منطقي ومو فارغ.",
+        fail_en="The rendered file is far too small to be a finished reel.",
+        fail_ar="حجم الملف صغير جداً — ما يكدر يكون ريل مكتمل.",
         size_bytes=info.size_bytes,
     ))
     return checks
@@ -134,6 +157,8 @@ def audio_checks(render: Render) -> List[Dict[str, Any]]:
             bool(audio_stage.get("ducked")) or "music" not in audio_stage.get("sources", []),
             "warning",
             "Music ducks under the voice-over.", "الموسيقى تنخفض تحت التعليق الصوتي.",
+            fail_en="Music does not duck under the voice-over.",
+            fail_ar="الموسيقى ما تنخفض تحت التعليق الصوتي.",
         ))
     return checks
 
@@ -151,6 +176,8 @@ def overlay_checks(render: Render, *, captions_expected: int = 0,
             "captions_rendered", len(captions) > 0, "critical",
             f"{len(captions)} caption(s) burnt into the picture.",
             f"انرسمت {len(captions)} كابشن بالفيديو.",
+            fail_en=f"No captions were burnt in; {captions_expected} were expected.",
+            fail_ar=f"ما انرسم ولا كابشن بالفيديو، والمفروض {captions_expected}.",
             rendered=len(captions), expected=captions_expected,
         ))
         outside = [c for c in captions if not c.get("within_safe_zone", True)]
@@ -158,6 +185,8 @@ def overlay_checks(render: Render, *, captions_expected: int = 0,
             "captions_in_safe_zone", not outside, "warning",
             "Every caption stays inside the platform safe zone.",
             "كل الكابشن داخل المنطقة الآمنة للمنصة.",
+            fail_en=f"{len(outside)} caption(s) fall outside the platform safe zone.",
+            fail_ar=f"أكو {len(outside)} كابشن خارج المنطقة الآمنة للمنصة.",
             offenders=len(outside),
         ))
         not_rtl = [c for c in captions if c.get("rtl") is False]
@@ -165,22 +194,30 @@ def overlay_checks(render: Render, *, captions_expected: int = 0,
             "arabic_captions_rtl", not not_rtl, "critical",
             "Arabic captions were laid out right-to-left.",
             "الكابشن العربي انكتب من اليمين لليسار بشكل صحيح.",
+            fail_en=f"{len(not_rtl)} Arabic caption(s) were not laid out right-to-left.",
+            fail_ar=f"أكو {len(not_rtl)} كابشن عربي ما انكتب من اليمين لليسار.",
             offenders=len(not_rtl),
         ))
     if branding_expected:
         checks.append(_check(
             "brand_layer_present", bool(overlays.get("logo")), "warning",
             "Brand logo is on screen.", "شعار العلامة ظاهر بالفيديو.",
+            fail_en="The brand logo was never drawn on screen.",
+            fail_ar="شعار العلامة ما ظهر بالفيديو.",
         ))
     if cta_expected:
         checks.append(_check(
             "cta_present", bool(overlays.get("cta")), "critical",
             "A call-to-action card is on screen.", "أكو كارت دعوة للتواصل بالفيديو.",
+            fail_en="No call-to-action card was drawn on screen.",
+            fail_ar="ما أكو كارت دعوة للتواصل بالفيديو.",
         ))
         checks.append(_check(
             "end_screen_present", bool(overlays.get("end_screen")), "warning",
             "The reel closes on a branded end screen.",
             "الريل يختم بشاشة نهاية بالهوية.",
+            fail_en="The reel does not close on a branded end screen.",
+            fail_ar="الريل ما يختم بشاشة نهاية بالهوية.",
         ))
     return checks
 
@@ -206,6 +243,8 @@ def copy_checks(project: Project, script: Optional[ScriptVersion],
             "phone_matches_brand_kit", present, "critical",
             "The phone number in the ad matches the Brand Kit.",
             "رقم الهاتف بالإعلان يطابق رقم هوية العلامة.",
+            fail_en="The Brand Kit phone number does not appear in the ad.",
+            fail_ar="رقم هاتف هوية العلامة ما يظهر بالإعلان.",
             expected=brand.phone,
         ))
     if project.name:
@@ -213,6 +252,8 @@ def copy_checks(project: Project, script: Optional[ScriptVersion],
             "project_name_present", project.name.strip() in corpus, "warning",
             "The project name is spoken or shown.",
             "اسم المشروع ينذكر أو يظهر.",
+            fail_en="The project name is never spoken or shown.",
+            fail_ar="اسم المشروع ما ينذكر ولا يظهر.",
             expected=project.name,
         ))
     checks.append(_check(
@@ -220,6 +261,8 @@ def copy_checks(project: Project, script: Optional[ScriptVersion],
         "critical",
         "The call to action appears in the approved copy.",
         "الدعوة للتواصل موجودة بالنص المعتمد.",
+        fail_en="The call to action does not appear in the approved copy.",
+        fail_ar="الدعوة للتواصل مو موجودة بالنص المعتمد.",
     ))
     return checks
 
