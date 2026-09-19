@@ -512,9 +512,18 @@ def render_project(db: Session, project: Project, *, user_id: Optional[str] = No
                 width=540, height=960,
             )
         report.setdefault("placeholder", True)
+        # Two very different failures land here, and saying the wrong one costs
+        # hours. "No clips" means production never produced anything to join;
+        # an assembly error means the clips were there and the renderer died on
+        # them — the live one was `assemble:overlays failed (exit -9)`, FFmpeg
+        # killed part-way through burning the overlays. The old note claimed
+        # there were no clips in both cases, which sends the reader back to
+        # production to look for a problem that is not there.
         report.setdefault(
             "note",
-            "Placeholder reel: no real scene clips were available to assemble.",
+            f"Placeholder reel: assembly failed at {report['stage']} — {report['error']}"
+            if report.get("error")
+            else "Placeholder reel: no real scene clips were available to assemble.",
         )
 
     render = Render(
