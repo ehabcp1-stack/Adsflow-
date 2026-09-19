@@ -51,7 +51,13 @@ EDITING_STYLES: List[Dict[str, Any]] = [
         "label_en": "Emotional Cinematic",
         "label_ar": "سينمائي عاطفي",
         "cut_pace_sec": 3.6,
-        "transition": "match_cut",
+        # A match cut is two shots whose framing lines up, and this engine does
+        # not align framing — it cuts between stills. Naming one here meant the
+        # cinematic style drew plain hard cuts, which is the slideshow feel the
+        # customer complained about. A style may only name a transition the
+        # renderer can actually construct; `match_cut` stays available for
+        # someone who asks for it on purpose.
+        "transition": "soft_dissolve",
         "caption_density": "medium",
         "color_look": "warm_film",
         "music_energy": 0.5,

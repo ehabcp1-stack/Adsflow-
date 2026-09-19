@@ -585,3 +585,22 @@ def test_a_clip_too_short_for_its_dissolve_cuts_instead(tmp_path, monkeypatch):
     assert result["transition"] == "cut"
     assert result["transition_requested"] == "soft_dissolve"
     assert "xfade" not in " ".join(calls[0])
+
+
+def test_every_editing_style_names_a_transition_the_renderer_can_draw():
+    """A style may not ask for something the engine cannot construct.
+
+    `emotional_cinematic` named `match_cut` — two shots whose framing lines
+    up, which this engine does not do; it cuts between stills. So the most
+    cinematic style in the product drew plain hard cuts, which is exactly the
+    slideshow feel that started this work. `cut` is a real choice; a name the
+    renderer silently turns into a cut is not.
+    """
+    from app.media.remix import xfade_effect
+    from app.services.editing import EDITING_STYLES
+
+    for style in EDITING_STYLES:
+        transition = style["transition"]
+        assert transition == "cut" or xfade_effect(transition), (
+            f"{style['key']} asks for {transition!r}, which nothing draws"
+        )
